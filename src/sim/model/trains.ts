@@ -67,7 +67,10 @@ export interface Train {
   route: RouteStop[];
   /** Index of the stop the train is heading to (advances cyclically). */
   targetIndex: number;
-  /** Current tile position (NaN until movement initializes at route[0]). */
+  /** False until movement places the train at route[0]. JSON-safe (NaN would
+   *  serialize to null and break the save round-trip), so this survives save/load. */
+  initialized: boolean;
+  /** Current tile position (valid once `initialized`). */
   x: number;
   y: number;
   /** Resolved tile path to the current target stop (empty until resolved). */
@@ -90,8 +93,9 @@ export function makeTrain(id: string, engineId: string, route: RouteStop[]): Tra
     cars: [],
     route,
     targetIndex: 0,
-    x: NaN,
-    y: NaN,
+    initialized: false,
+    x: 0,
+    y: 0,
     path: [],
     pathPos: 0,
     distToNext: 0,

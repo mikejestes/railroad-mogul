@@ -42,6 +42,9 @@ export interface GameState {
   stations: Station[];
   /** Trains running the network (U6). */
   trains: Train[];
+  /** Monotonic counter for player-built station ids; serialized so ids stay
+   *  unique and deterministic across save/load and replay. */
+  nextStationId: number;
   /** Calendar year the game began (U6 era progression). */
   startYear: number;
   /** Save-format version, for migrations (U11). */
@@ -64,6 +67,7 @@ export function createGameState(seed: number): GameState {
     track: { segments: [] },
     stations: [],
     trains: [],
+    nextStationId: 0,
     startYear: START_YEAR,
     schemaVersion: SCHEMA_VERSION,
   };

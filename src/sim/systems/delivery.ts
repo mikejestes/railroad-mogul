@@ -4,7 +4,7 @@ import { GOODS, RECIPES, type GoodId } from '../model/goods.ts';
 import { addMoney } from '../state.ts';
 import { citiesInCatchment, industriesInCatchment, type Station } from '../model/track.ts';
 import { departTrain } from './movement.ts';
-import type { Train } from '../model/trains.ts';
+import { engineById, totalCargo, type Train } from '../model/trains.ts';
 
 /**
  * Delivery & the demand-coupled fee model (U7, KTD4) — the mechanic everything
@@ -32,6 +32,7 @@ export interface FeeInputs {
 }
 
 const PRESSURE_DAYS = 6; // backlog (in days of demand) at which pressure saturates to 1
+export const PROCESSOR_INPUT_CAP = 40; // max buffered input a processor will accept per good
 const TIMELINESS_DECAY = 0.05; // per transit day
 const TIMELINESS_FLOOR = 0.25;
 const DISTANCE_WEIGHT = 0.25; // diminishing-returns coefficient on sqrt(distance)
@@ -98,21 +99,28 @@ function unloadCargo(state: GameState, train: Train, station: Station, day: numb
       qtyLeft -= take;
     }
 
-    // 2. Feed a processor that consumes this good (paid a flat bulk fee).
+    // 2. Feed a processor that consumes this good (paid a flat bulk fee), but
+    //    only up to the processor's remaining input headroom — you are not paid
+    //    for input it cannot buffer, so a raw->processor route can't mint money
+    //    or pile inputStock without bound (adversarial finding).
     if (qtyLeft > 0) {
       const [processor] = processorsWanting(state, station, car.good);
       if (processor) {
-        processor.inputStock[car.good] = (processor.inputStock[car.good] ?? 0) + qtyLeft;
-        const feed = computeFee({
-          good: car.good,
-          qty: qtyLeft,
-          backlog: qtyLeft * PRESSURE_DAYS,
-          demandPerDay: qtyLeft,
-          transitDays,
-          distance,
-        });
-        addMoney(state, feed);
-        qtyLeft = 0;
+        const current = processor.inputStock[car.good] ?? 0;
+        const accepted = Math.min(qtyLeft, Math.max(0, PROCESSOR_INPUT_CAP - current));
+        if (accepted > 0) {
+          processor.inputStock[car.good] = current + accepted;
+          const feed = computeFee({
+            good: car.good,
+            qty: accepted,
+            backlog: accepted * PRESSURE_DAYS,
+            demandPerDay: accepted,
+            transitDays,
+            distance,
+          });
+          addMoney(state, feed);
+          qtyLeft -= accepted;
+        }
       }
     }
 
@@ -125,11 +133,19 @@ function loadCargo(state: GameState, train: Train, station: Station, day: number
   const stop = train.route[train.targetIndex];
   if (!stop || stop.loads.length === 0) return;
 
-  const engineCapacity = train.capacityPerCar; // per-car; simplified single-car-per-good model
+  // Total capacity is engine power (car count) x per-car units. Loading never
+  // exceeds remaining headroom, so cargo can't accumulate without bound across
+  // loops (adversarial finding: an undeliverable good would otherwise pile up
+  // and drive effectiveSpeed toward zero).
+  const engine = engineById(train.engineId);
+  const totalCapacity = (engine?.power ?? 1) * train.capacityPerCar;
+
   for (const good of stop.loads) {
+    const headroom = totalCapacity - totalCargo(train);
+    if (headroom <= 0) break;
     const source = industriesInCatchment(state, station).find((i) => i.output === good && i.outputStock >= 1);
     if (!source) continue;
-    const take = Math.min(Math.floor(source.outputStock), engineCapacity);
+    const take = Math.min(Math.floor(source.outputStock), train.capacityPerCar, headroom);
     if (take <= 0) continue;
     source.outputStock -= take;
     train.cars.push({ good, qty: take, originX: station.x, originY: station.y, loadedDay: day });

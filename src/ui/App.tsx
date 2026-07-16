@@ -37,7 +37,7 @@ export function App({
       <div style={{ position: 'absolute', top: 12, left: 12, ...row }}>
         <FinancePanel state={state} />
         <ClockControls clock={clock} />
-        <BuildPanel mode={buildMode} onModeChange={changeBuildMode} store={store} />
+        <BuildPanel mode={buildMode} onModeChange={changeBuildMode} />
       </div>
       <div style={{ position: 'absolute', top: 60, left: 12, width: 240 }}>
         <CityPanel state={state} />

@@ -1,5 +1,3 @@
-import type { GameStore } from '../../store/gameStore.ts';
-
 export type BuildMode = 'none' | 'track' | 'station';
 
 /**
@@ -14,7 +12,6 @@ export function BuildPanel({
 }: {
   mode: BuildMode;
   onModeChange: (m: BuildMode) => void;
-  store?: GameStore;
 }) {
   const button = (m: BuildMode, label: string) => (
     <button

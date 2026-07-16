@@ -8,21 +8,16 @@ import { layTrack, buildStation } from '../sim/model/track.ts';
  * actions land deterministically between ticks. Build validation and cost live
  * in the sim model (`track.ts`); this is only the dispatch.
  *
- * `setSpeed` / `setPaused` are clock concerns, not state — the host applies
- * those to the GameClock directly and they are ignored here.
+ * Station ids come from a serialized `state.nextStationId` counter, so they stay
+ * unique and deterministic across save/load and replay (no module-level state).
  */
-let stationCounter = 0;
-
 export function applyIntent(state: GameState, intent: Intent): void {
   switch (intent.kind) {
     case 'layTrack':
       layTrack(state, intent.ax, intent.ay, intent.bx, intent.by);
       break;
     case 'buildStation':
-      buildStation(state, `stn-${stationCounter++}`, intent.x, intent.y, intent.radius);
+      buildStation(state, `stn-${state.nextStationId++}`, intent.x, intent.y, intent.radius);
       break;
-    case 'setSpeed':
-    case 'setPaused':
-      break; // handled by the clock, not sim state
   }
 }

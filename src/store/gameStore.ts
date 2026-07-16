@@ -10,11 +10,11 @@ import type { GameState } from '../sim/state.ts';
  * the store is deliberately message/snapshot-shaped so the kernel can later
  * move to a Web Worker without changing this contract (adversarial hedge).
  */
+// Player intents that mutate SIM state. Clock control (pause/speed) is not a
+// sim intent — it acts on the GameClock directly — so it is not modeled here.
 export type Intent =
   | { kind: 'layTrack'; ax: number; ay: number; bx: number; by: number }
-  | { kind: 'buildStation'; x: number; y: number; radius: number }
-  | { kind: 'setSpeed'; multiplier: number }
-  | { kind: 'setPaused'; paused: boolean };
+  | { kind: 'buildStation'; x: number; y: number; radius: number };
 
 export type Listener = (state: GameState) => void;
 

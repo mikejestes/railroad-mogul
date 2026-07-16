@@ -45,13 +45,17 @@ export const movementSystem: System = (state, dtDays) => {
     if (train.route.length < 2) continue;
 
     // Lazy init: place the train at its first stop and let delivery process it.
-    if (Number.isNaN(train.x)) {
+    // Guards on the JSON-safe `initialized` flag, not a NaN sentinel, so a
+    // train saved before its first tick still re-inits after load (correctness/
+    // adversarial finding: NaN -> null across serialize would strand it).
+    if (!train.initialized) {
       const origin = stationById(state, train.route[0].stationId);
       if (!origin) continue;
       train.x = origin.x;
       train.y = origin.y;
       train.targetIndex = 0;
       train.atStationId = train.route[0].stationId;
+      train.initialized = true;
       continue;
     }
 

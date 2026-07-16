@@ -22,8 +22,8 @@ describe('store bridge and intents (U10)', () => {
 
   it('queues and drains intents', () => {
     const store = new GameStore(createGameState(1));
-    store.dispatch({ kind: 'setSpeed', multiplier: 2 });
-    store.dispatch({ kind: 'setPaused', paused: true });
+    store.dispatch({ kind: 'layTrack', ax: 0, ay: 0, bx: 1, by: 0 });
+    store.dispatch({ kind: 'buildStation', x: 1, y: 1, radius: 2 });
     expect(store.drainIntents()).toHaveLength(2);
     expect(store.drainIntents()).toHaveLength(0); // drained
   });

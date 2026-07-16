@@ -1,6 +1,7 @@
 import { StrictMode, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './ui/App.tsx';
+import type { BuildMode } from './ui/panels/BuildPanel.tsx';
 import { createMapRenderer } from './render/mapRenderer.ts';
 import { DemandOverlay } from './render/overlays.ts';
 import { generateGame } from './world/generate.ts';
@@ -43,7 +44,40 @@ async function boot() {
     }
   });
 
-  createRoot(uiHost).render(createElement(StrictMode, null, createElement(App, { store, clock })));
+  // Map-click building: the React BuildPanel arms a mode; clicks on the canvas
+  // translate to tile coords and dispatch build intents to the store (drained
+  // in the loop below). Track mode chains adjacent clicks into segments.
+  let buildMode: BuildMode = 'none';
+  let lastTrackTile: { x: number; y: number } | null = null;
+  const canvas = renderer.app.canvas as HTMLCanvasElement;
+  canvas.addEventListener('pointerdown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / TILE_PX);
+    const y = Math.floor((e.clientY - rect.top) / TILE_PX);
+    if (buildMode === 'station') {
+      store.dispatch({ kind: 'buildStation', x, y, radius: 2 });
+    } else if (buildMode === 'track') {
+      if (lastTrackTile) {
+        store.dispatch({ kind: 'layTrack', ax: lastTrackTile.x, ay: lastTrackTile.y, bx: x, by: y });
+      }
+      lastTrackTile = { x, y };
+    }
+  });
+
+  createRoot(uiHost).render(
+    createElement(
+      StrictMode,
+      null,
+      createElement(App, {
+        store,
+        clock,
+        onBuildModeChange: (mode: BuildMode) => {
+          buildMode = mode;
+          lastTrackTile = null; // reset the track chain when the mode changes
+        },
+      }),
+    ),
+  );
 
   // Game loop: drain intents, advance the clock, redraw overlays.
   let last = performance.now();

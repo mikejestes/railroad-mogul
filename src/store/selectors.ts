@@ -2,6 +2,7 @@ import type { GameState } from '../sim/state.ts';
 import type { GoodId } from '../sim/model/goods.ts';
 import { GOODS } from '../sim/model/goods.ts';
 import { computeFee } from '../sim/systems/delivery.ts';
+import { inCatchment } from '../sim/model/track.ts';
 
 /**
  * Read-model selectors shared by the map overlays (U9) and the management UI
@@ -57,11 +58,12 @@ export function routeFeePreview(
   const transitDays = Math.max(1, Math.round(distance));
 
   // Aggregate demand across cities in the destination station's catchment.
-  const radius = to.radius;
+  // Shares the one catchment definition with delivery via inCatchment (they
+  // must not drift if the catchment shape ever changes).
   let backlog = 0;
   let demandPerDay = 0;
   for (const city of state.cities) {
-    if (Math.max(Math.abs(city.x - to.x), Math.abs(city.y - to.y)) <= radius) {
+    if (inCatchment(to, city.x, city.y)) {
       backlog += city.backlog[good] ?? 0;
       demandPerDay += city.demand[good] ?? 0;
     }

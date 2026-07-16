@@ -85,17 +85,3 @@ export function findPath(state: GameState, sx: number, sy: number, gx: number, g
   path.reverse();
   return path;
 }
-
-/** Total weighted length of a resolved path. */
-export function pathLength(state: GameState, path: Tile[]): number {
-  let total = 0;
-  for (let i = 0; i + 1 < path.length; i++) {
-    total += segmentWeight(state.world, {
-      ax: path[i].x,
-      ay: path[i].y,
-      bx: path[i + 1].x,
-      by: path[i + 1].y,
-    });
-  }
-  return total;
-}
