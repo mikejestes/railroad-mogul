@@ -1,27 +1,50 @@
+import { useState } from 'react';
+import type { GameStore } from '../store/gameStore.ts';
+import type { GameClock } from '../sim/clock.ts';
+import { useGameState } from './useGameState.ts';
+import { CityPanel } from './panels/CityPanel.tsx';
+import { TrainPanel } from './panels/TrainPanel.tsx';
+import { FinancePanel } from './panels/FinancePanel.tsx';
+import { ClockControls } from './panels/ClockControls.tsx';
+import { BuildPanel, type BuildMode } from './panels/BuildPanel.tsx';
+
 /**
- * Root of the React management-UI overlay. This tree is a sibling of the
- * PixiJS map canvas, not a child of it (see index.html). It reads game state
- * from the store and sends player intents back — it is deliberately kept out
- * of the per-frame render path (KTD1, U10).
- *
- * U1 ships a placeholder HUD; U10 replaces it with the city/train/finance
- * panels and U12 adds the clock controls.
+ * Root of the React management overlay (U10). Subscribes to store snapshots
+ * (published on tick) and composes the panels. Sits as a sibling DOM tree over
+ * the PixiJS map canvas; player build actions flow back to the sim as intents.
  */
-export function App() {
+export function App({
+  store,
+  clock,
+  onBuildModeChange,
+}: {
+  store: GameStore;
+  clock: GameClock;
+  onBuildModeChange?: (mode: BuildMode) => void;
+}) {
+  const state = useGameState(store);
+  const [buildMode, setBuildMode] = useState<BuildMode>('none');
+
+  const changeBuildMode = (m: BuildMode) => {
+    setBuildMode(m);
+    onBuildModeChange?.(m);
+  };
+
+  const row: React.CSSProperties = { display: 'flex', gap: 8, alignItems: 'flex-start' };
+
   return (
-    <div
-      style={{
-        position: 'absolute',
-        top: 12,
-        left: 12,
-        padding: '8px 12px',
-        borderRadius: 8,
-        background: 'rgba(13, 27, 42, 0.75)',
-        color: '#e0e1dd',
-        font: '13px system-ui, sans-serif',
-      }}
-    >
-      Railroad Economy Sim — scaffold
-    </div>
+    <>
+      <div style={{ position: 'absolute', top: 12, left: 12, ...row }}>
+        <FinancePanel state={state} />
+        <ClockControls clock={clock} />
+        <BuildPanel mode={buildMode} onModeChange={changeBuildMode} store={store} />
+      </div>
+      <div style={{ position: 'absolute', top: 60, left: 12, width: 240 }}>
+        <CityPanel state={state} />
+      </div>
+      <div style={{ position: 'absolute', top: 12, right: 12, width: 220 }}>
+        <TrainPanel state={state} />
+      </div>
+    </>
   );
 }
