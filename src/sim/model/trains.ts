@@ -43,6 +43,11 @@ export function availableEngines(year: number): Engine[] {
 export interface CarLoad {
   good: GoodId;
   qty: number;
+  /** Tile the cargo was loaded at (for the fee distance factor, U7). */
+  originX: number;
+  originY: number;
+  /** Sim day the cargo was loaded (for the fee timeliness factor, U7). */
+  loadedDay: number;
 }
 
 export interface RouteStop {

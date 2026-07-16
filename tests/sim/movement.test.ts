@@ -41,7 +41,7 @@ describe('train movement', () => {
     const build = (cargo: number) => {
       const s = lineWorld(20);
       const train = makeTrain('t', 'pacific', routeAB());
-      if (cargo > 0) train.cars.push({ good: 'coal', qty: cargo });
+      if (cargo > 0) train.cars.push({ good: 'coal', qty: cargo, originX: 0, originY: 0, loadedDay: 0 });
       s.trains.push(train);
       tick(s, 1, [movementSystem]); // init at A
       departTrain(train);
