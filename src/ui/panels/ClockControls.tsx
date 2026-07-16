@@ -13,6 +13,7 @@ export function ClockControls({ clock }: { clock: GameClock }) {
 
   const btn = (label: string, active: boolean, onClick: () => void) => (
     <button
+      key={label}
       onClick={() => {
         onClick();
         rerender();

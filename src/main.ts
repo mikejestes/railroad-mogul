@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './ui/App.tsx';
 import type { BuildMode } from './ui/panels/BuildPanel.tsx';
 import { createMapRenderer } from './render/mapRenderer.ts';
-import { DemandOverlay } from './render/overlays.ts';
+import { WorldRenderer } from './render/worldRenderer.ts';
 import { generateGame } from './world/generate.ts';
 import { GameStore } from './store/gameStore.ts';
 import { applyIntent } from './store/applyIntents.ts';
@@ -30,8 +30,8 @@ async function boot() {
   const clock = new GameClock(store.getState(), undefined, (s) => store.publish(s));
 
   const renderer = await createMapRenderer(canvasHost);
-  const overlay = new DemandOverlay();
-  renderer.app.stage.addChild(overlay.container);
+  const world = new WorldRenderer(TILE_PX);
+  renderer.app.stage.addChild(world.container);
 
   // Pause the sim while the tab is hidden; resume on return (U12).
   let wasPausedByUser = false;
@@ -74,6 +74,7 @@ async function boot() {
         onBuildModeChange: (mode: BuildMode) => {
           buildMode = mode;
           lastTrackTile = null; // reset the track chain when the mode changes
+          canvas.style.cursor = mode === 'none' ? 'default' : 'crosshair';
         },
       }),
     ),
@@ -86,7 +87,7 @@ async function boot() {
     last = now;
     for (const intent of store.drainIntents()) applyIntent(store.getState(), intent);
     clock.advance(dt);
-    overlay.render(store.getState(), TILE_PX);
+    world.render(store.getState());
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
