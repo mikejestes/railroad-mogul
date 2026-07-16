@@ -1,6 +1,7 @@
 import type { System } from '../tick.ts';
 import { productionSystem } from './production.ts';
 import { demandSystem } from './demand.ts';
+import { movementSystem } from './movement.ts';
 
 /**
  * The ordered system pipeline (KTD3). Each tick runs these in a fixed order —
@@ -12,4 +13,4 @@ import { demandSystem } from './demand.ts';
  * Movement (U6), delivery (U7), and growth (U8) are inserted in order as those
  * units land.
  */
-export const SYSTEMS: System[] = [productionSystem, demandSystem];
+export const SYSTEMS: System[] = [productionSystem, demandSystem, movementSystem];

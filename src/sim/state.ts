@@ -3,6 +3,7 @@ import type { Terrain } from '../world/geography.ts';
 import type { City } from './model/cities.ts';
 import type { Industry } from './model/industries.ts';
 import type { Station, TrackNetwork } from './model/track.ts';
+import type { Train } from './model/trains.ts';
 
 /**
  * The whole simulation world as plain, serializable data (KTD2). No class
@@ -39,9 +40,15 @@ export interface GameState {
   track: TrackNetwork;
   /** Player-built stations with catchment (U5). */
   stations: Station[];
+  /** Trains running the network (U6). */
+  trains: Train[];
+  /** Calendar year the game began (U6 era progression). */
+  startYear: number;
   /** Save-format version, for migrations (U11). */
   schemaVersion: number;
 }
+
+export const START_YEAR = 1830;
 
 export const SCHEMA_VERSION = 1;
 
@@ -56,6 +63,8 @@ export function createGameState(seed: number): GameState {
     industries: [],
     track: { segments: [] },
     stations: [],
+    trains: [],
+    startYear: START_YEAR,
     schemaVersion: SCHEMA_VERSION,
   };
 }
