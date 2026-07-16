@@ -7,6 +7,7 @@ import { TrainPanel } from './panels/TrainPanel.tsx';
 import { FinancePanel } from './panels/FinancePanel.tsx';
 import { ClockControls } from './panels/ClockControls.tsx';
 import { BuildPanel, type BuildMode } from './panels/BuildPanel.tsx';
+import { TrainBuilder } from './panels/TrainBuilder.tsx';
 
 /**
  * Root of the React management overlay (U10). Subscribes to store snapshots
@@ -45,6 +46,11 @@ export function App({
       <div style={{ position: 'absolute', top: 12, right: 12, width: 220 }}>
         <TrainPanel state={state} />
       </div>
+      {buildMode === 'train' && (
+        <div style={{ position: 'absolute', top: 60, right: 12 }}>
+          <TrainBuilder state={state} store={store} onDone={() => changeBuildMode('none')} />
+        </div>
+      )}
     </>
   );
 }

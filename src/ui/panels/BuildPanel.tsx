@@ -1,4 +1,4 @@
-export type BuildMode = 'none' | 'track' | 'station';
+export type BuildMode = 'none' | 'track' | 'station' | 'train';
 
 /**
  * Build-mode toggle (U5). Thin view over the store: choosing a mode arms the
@@ -33,6 +33,7 @@ export function BuildPanel({
     <div style={{ display: 'flex', gap: 6 }}>
       {button('track', 'Lay Track')}
       {button('station', 'Build Station')}
+      {button('train', 'Buy Train')}
     </div>
   );
 }

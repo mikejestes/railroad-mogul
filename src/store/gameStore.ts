@@ -14,7 +14,8 @@ import type { GameState } from '../sim/state.ts';
 // sim intent — it acts on the GameClock directly — so it is not modeled here.
 export type Intent =
   | { kind: 'layTrack'; ax: number; ay: number; bx: number; by: number }
-  | { kind: 'buildStation'; x: number; y: number; radius: number };
+  | { kind: 'buildStation'; x: number; y: number; radius: number }
+  | { kind: 'buyTrain'; engineId: string; stationIds: string[] };
 
 export type Listener = (state: GameState) => void;
 

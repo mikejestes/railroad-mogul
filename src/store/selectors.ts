@@ -2,7 +2,7 @@ import type { GameState } from '../sim/state.ts';
 import type { GoodId } from '../sim/model/goods.ts';
 import { GOODS } from '../sim/model/goods.ts';
 import { computeFee } from '../sim/systems/delivery.ts';
-import { inCatchment } from '../sim/model/track.ts';
+import { inCatchment, type Station } from '../sim/model/track.ts';
 
 /**
  * Read-model selectors shared by the map overlays (U9) and the management UI
@@ -70,6 +70,12 @@ export function routeFeePreview(
   }
 
   return computeFee({ good, qty, backlog, demandPerDay, transitDays, distance });
+}
+
+/** Human-readable station label: the nearest city in catchment, else its tile. */
+export function stationLabel(state: GameState, station: Station): string {
+  const city = state.cities.find((c) => inCatchment(station, c.x, c.y));
+  return city ? `near ${city.name}` : `(${station.x}, ${station.y})`;
 }
 
 export interface TrainSummary {
