@@ -6,7 +6,7 @@ import {
   terrainAt,
   type Terrain,
 } from './geography.ts';
-import { createGameState, tileIndex, type GameState } from '../sim/state.ts';
+import { createGameState, tileIndex, STARTING_CAPITAL, type GameState } from '../sim/state.ts';
 import { makeCity } from '../sim/model/cities.ts';
 import { makeIndustry } from '../sim/model/industries.ts';
 import { RAW_INDUSTRY_TYPES, PROCESSOR_INDUSTRY_TYPES, type IndustryType } from '../sim/model/goods.ts';
@@ -20,6 +20,7 @@ import { nextInt } from '../sim/rng.ts';
  */
 export function generateGame(seed: number): GameState {
   const state = createGameState(seed);
+  state.moneyCents = STARTING_CAPITAL;
 
   // 1. Terrain grid from the coarse landmass model.
   const terrain: Terrain[] = new Array(GRID_WIDTH * GRID_HEIGHT);

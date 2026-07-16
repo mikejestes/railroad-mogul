@@ -2,6 +2,7 @@ import { createRng, type RngState } from './rng.ts';
 import type { Terrain } from '../world/geography.ts';
 import type { City } from './model/cities.ts';
 import type { Industry } from './model/industries.ts';
+import type { Station, TrackNetwork } from './model/track.ts';
 
 /**
  * The whole simulation world as plain, serializable data (KTD2). No class
@@ -34,6 +35,10 @@ export interface GameState {
   cities: City[];
   /** Industry sites: producers and processors (U3, U4). */
   industries: Industry[];
+  /** Player-laid track graph (U5). */
+  track: TrackNetwork;
+  /** Player-built stations with catchment (U5). */
+  stations: Station[];
   /** Save-format version, for migrations (U11). */
   schemaVersion: number;
 }
@@ -49,9 +54,14 @@ export function createGameState(seed: number): GameState {
     world: { width: 0, height: 0, terrain: [] },
     cities: [],
     industries: [],
+    track: { segments: [] },
+    stations: [],
     schemaVersion: SCHEMA_VERSION,
   };
 }
+
+/** Starting capital for a new game, in integer cents (~$1,000,000). */
+export const STARTING_CAPITAL = 1_000_000_00;
 
 /** Row-major tile index helper. */
 export function tileIndex(world: World, x: number, y: number): number {
