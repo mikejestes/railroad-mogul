@@ -1,4 +1,7 @@
 import { createRng, type RngState } from './rng.ts';
+import type { Terrain } from '../world/geography.ts';
+import type { City } from './model/cities.ts';
+import type { Industry } from './model/industries.ts';
 
 /**
  * The whole simulation world as plain, serializable data (KTD2). No class
@@ -9,6 +12,13 @@ import { createRng, type RngState } from './rng.ts';
  * stockpiles and demand, U5 track, U6 trains. They append fields; they do not
  * change the money-is-integer or canonical-serialization contracts.
  */
+/** The tile grid. `terrain` is row-major, length width*height (U3). */
+export interface World {
+  width: number;
+  height: number;
+  terrain: Terrain[];
+}
+
 export interface GameState {
   /** Fixed ticks elapsed since the game began. */
   tick: number;
@@ -18,6 +28,12 @@ export interface GameState {
   moneyCents: number;
   /** Serializable RNG stream driving all in-sim randomness. */
   rng: RngState;
+  /** The tile grid (empty until U3 generation fills it). */
+  world: World;
+  /** Cities: demand sinks that grow when fed (U3, U8). */
+  cities: City[];
+  /** Industry sites: producers and processors (U3, U4). */
+  industries: Industry[];
   /** Save-format version, for migrations (U11). */
   schemaVersion: number;
 }
@@ -30,8 +46,16 @@ export function createGameState(seed: number): GameState {
     timeDays: 0,
     moneyCents: 0,
     rng: createRng(seed),
+    world: { width: 0, height: 0, terrain: [] },
+    cities: [],
+    industries: [],
     schemaVersion: SCHEMA_VERSION,
   };
+}
+
+/** Row-major tile index helper. */
+export function tileIndex(world: World, x: number, y: number): number {
+  return y * world.width + x;
 }
 
 /** Adjust player cash. Callers pass integer cents; guarded to stay integer. */
