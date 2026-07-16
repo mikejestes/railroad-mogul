@@ -143,11 +143,24 @@ function loadCargo(state: GameState, train: Train, station: Station, day: number
   for (const good of stop.loads) {
     const headroom = totalCapacity - totalCargo(train);
     if (headroom <= 0) break;
-    const source = industriesInCatchment(state, station).find((i) => i.output === good && i.outputStock >= 1);
-    if (!source) continue;
-    const take = Math.min(Math.floor(source.outputStock), train.capacityPerCar, headroom);
-    if (take <= 0) continue;
-    source.outputStock -= take;
-    train.cars.push({ good, qty: take, originX: station.x, originY: station.y, loadedDay: day });
+    const cap = Math.min(train.capacityPerCar, headroom);
+
+    // Freight comes from an industry's output; passengers/mail come from a city
+    // in the catchment (generated from population). Pick whichever supplies it.
+    const industry = industriesInCatchment(state, station).find((i) => i.output === good && i.outputStock >= 1);
+    if (industry) {
+      const take = Math.min(Math.floor(industry.outputStock), cap);
+      if (take <= 0) continue;
+      industry.outputStock -= take;
+      train.cars.push({ good, qty: take, originX: station.x, originY: station.y, loadedDay: day });
+      continue;
+    }
+    const city = citiesInCatchment(state, station).find((c) => (c.supply[good] ?? 0) >= 1);
+    if (city) {
+      const take = Math.min(Math.floor(city.supply[good] ?? 0), cap);
+      if (take <= 0) continue;
+      city.supply[good] = (city.supply[good] ?? 0) - take;
+      train.cars.push({ good, qty: take, originX: station.x, originY: station.y, loadedDay: day });
+    }
   }
 }

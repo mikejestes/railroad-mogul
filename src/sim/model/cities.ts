@@ -17,6 +17,9 @@ export interface City {
   demand: Partial<Record<GoodId, number>>;
   /** Unmet demand accumulator per good; grows by demand/day, drained by delivery (U4/U7). */
   backlog: Partial<Record<GoodId, number>>;
+  /** Outbound passengers/mail the city generates from population, waiting at its
+   *  station to be hauled to another city. Trains load from here. */
+  supply: Partial<Record<GoodId, number>>;
   /** Rolling fulfillment score per good (0..1), updated by delivery (U7/U8). */
   fulfillment: Partial<Record<GoodId, number>>;
   /** Days of sustained freight fulfillment accrued toward the next size tier (U8). */
@@ -54,6 +57,7 @@ export function makeCity(id: string, name: string, x: number, y: number, tier = 
     population: populationForTier(tier),
     demand: demandForTier(tier),
     backlog: {},
+    supply: {},
     fulfillment: {},
     growthProgress: 0,
   };
