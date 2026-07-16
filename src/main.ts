@@ -8,6 +8,7 @@ import { generateGame } from './world/generate.ts';
 import { GameStore } from './store/gameStore.ts';
 import { applyIntent } from './store/applyIntents.ts';
 import { GameClock } from './sim/clock.ts';
+import { installDebugHook } from './dev/debugHook.ts';
 
 /**
  * Entry point. Wires the whole game together (U10/U12):
@@ -25,7 +26,15 @@ async function boot() {
   const uiHost = document.getElementById('ui-overlay');
   if (!canvasHost || !uiHost) throw new Error('Expected #map-canvas and #ui-overlay hosts');
 
-  const state = generateGame(Math.floor(performance.now()) || 1);
+  // URL flags for reproducible, automation-friendly runs:
+  //   ?seed=<n>  fixed world seed (default: time-based, so every launch differs)
+  //   ?nopause   don't pause the sim on tab blur (also implied under automation)
+  const params = new URLSearchParams(location.search);
+  const seedParam = params.get('seed');
+  const seed = seedParam !== null ? Number(seedParam) >>> 0 : Math.floor(performance.now()) || 1;
+  const noPause = params.has('nopause') || navigator.webdriver;
+
+  const state = generateGame(seed);
   const store = new GameStore(state);
   const clock = new GameClock(store.getState(), undefined, (s) => store.publish(s));
 
@@ -33,16 +42,19 @@ async function boot() {
   const world = new WorldRenderer(TILE_PX);
   renderer.app.stage.addChild(world.container);
 
-  // Pause the sim while the tab is hidden; resume on return (U12).
-  let wasPausedByUser = false;
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      wasPausedByUser = clock.paused;
-      clock.paused = true;
-    } else {
-      clock.paused = wasPausedByUser;
-    }
-  });
+  // Pause the sim while the tab is hidden; resume on return (U12). Skipped under
+  // ?nopause / automation so headless verification keeps ticking.
+  if (!noPause) {
+    let wasPausedByUser = false;
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        wasPausedByUser = clock.paused;
+        clock.paused = true;
+      } else {
+        clock.paused = wasPausedByUser;
+      }
+    });
+  }
 
   // Map-click building: the React BuildPanel arms a mode; clicks on the canvas
   // translate to tile coords and dispatch build intents to the store (drained
@@ -79,6 +91,9 @@ async function boot() {
       }),
     ),
   );
+
+  // Dev-only inspection/control hook for console + browser-driven verification.
+  if (import.meta.env.DEV) installDebugHook(store, clock, seed);
 
   // Game loop: drain intents, advance the clock, redraw overlays.
   let last = performance.now();
