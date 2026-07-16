@@ -18,7 +18,7 @@ export type System = (state: GameState, dtDays: number) => void;
  * The clock (U12) decides how many fixed ticks to run per real frame; `tick`
  * itself never reads wall-clock time.
  */
-export function tick(state: GameState, dtDays: number, systems: System[] = SYSTEMS): void {
+export function tick(state: GameState, dtDays = 1, systems: System[] = SYSTEMS): void {
   for (const system of systems) {
     system(state, dtDays);
   }

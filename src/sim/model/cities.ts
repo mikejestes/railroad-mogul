@@ -15,6 +15,8 @@ export interface City {
   population: number;
   /** Desired units per day, per good, at the current size tier. */
   demand: Partial<Record<GoodId, number>>;
+  /** Unmet demand accumulator per good; grows by demand/day, drained by delivery (U4/U7). */
+  backlog: Partial<Record<GoodId, number>>;
   /** Rolling fulfillment score per good (0..1), updated by delivery (U7/U8). */
   fulfillment: Partial<Record<GoodId, number>>;
 }
@@ -49,6 +51,7 @@ export function makeCity(id: string, name: string, x: number, y: number, tier = 
     sizeTier: tier,
     population: populationForTier(tier),
     demand: demandForTier(tier),
+    backlog: {},
     fulfillment: {},
   };
 }
