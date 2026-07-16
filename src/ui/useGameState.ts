@@ -8,8 +8,12 @@ import type { GameState } from '../sim/state.ts';
  * frame — keeping React out of the hot path (KTD1).
  */
 export function useGameState(store: GameStore): GameState {
-  return useSyncExternalStore(
+  // Track the store's version (a changing primitive) so React re-renders every
+  // tick; then read the live, in-place-mutated state. Returning the state
+  // object directly would freeze the UI, since its reference never changes.
+  useSyncExternalStore(
     (cb) => store.subscribe(cb),
-    () => store.getState(),
+    () => store.getVersion(),
   );
+  return store.getState();
 }

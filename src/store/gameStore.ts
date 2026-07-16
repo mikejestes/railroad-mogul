@@ -20,6 +20,7 @@ export type Listener = (state: GameState) => void;
 
 export class GameStore {
   private state: GameState;
+  private version = 0;
   private listeners = new Set<Listener>();
   private pending: Intent[] = [];
 
@@ -32,9 +33,20 @@ export class GameStore {
     return this.state;
   }
 
+  /**
+   * Monotonic version, bumped on every publish. React's useSyncExternalStore
+   * uses this as its snapshot: the sim mutates state in place and publishes the
+   * same object reference each tick, so an Object.is check on the state itself
+   * would never re-render the panels. The changing version is what drives the UI.
+   */
+  getVersion(): number {
+    return this.version;
+  }
+
   /** Publish a new snapshot and notify subscribers (called on tick). */
   publish(state: GameState): void {
     this.state = state;
+    this.version += 1;
     for (const l of this.listeners) l(state);
   }
 
