@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { GameState } from '../../sim/state.ts';
 import type { GameStore } from '../../store/gameStore.ts';
 import { availableEngines, currentYear } from '../../sim/model/trains.ts';
-import { stationLabel } from '../../store/selectors.ts';
+import { stationLabel, routeGaps } from '../../store/selectors.ts';
 
 /**
  * Buy-train flow (U6/U10): pick an available engine, click stations to build an
@@ -39,6 +39,7 @@ export function TrainBuilder({ state, store, onDone }: { state: GameState; store
   const engines = availableEngines(currentYear(state));
   const engine = engines.find((e) => e.id === engineId) ?? null;
   const canAfford = engine ? state.moneyCents >= engine.cost : false;
+  const gaps = routeGaps(state, route);
   const canDispatch = engine !== null && route.length >= 2 && canAfford;
 
   const dispatch = () => {
@@ -87,6 +88,12 @@ export function TrainBuilder({ state, store, onDone }: { state: GameState; store
           <button style={chip(false)} onClick={() => setRoute([])}>
             Clear route
           </button>
+        </div>
+      )}
+
+      {gaps.length > 0 && (
+        <div style={{ color: '#e9c46a', marginBottom: 6, fontSize: 11 }}>
+          ⚠ No track connects: {gaps.join(', ')}. Lay track between them or the train will idle.
         </div>
       )}
 

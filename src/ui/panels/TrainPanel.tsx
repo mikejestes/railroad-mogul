@@ -16,11 +16,17 @@ export function TrainPanel({ state }: { state: GameState }) {
       }}
     >
       <div style={{ fontWeight: 600, marginBottom: 4 }}>Trains</div>
-      {trains.map((t) => (
-        <div key={t.id} style={{ opacity: 0.9 }}>
-          {t.id} · {t.engineId} · {t.cargoUnits}u{t.atStationId ? ` @ ${t.atStationId}` : ' (running)'}
-        </div>
-      ))}
+      {trains.map((t) => {
+        const stuck = t.status.startsWith('idle');
+        return (
+          <div key={t.id} style={{ marginBottom: 3 }}>
+            <div style={{ opacity: 0.9 }}>
+              {t.id} · {t.engineId} · {t.cargoUnits}u
+            </div>
+            <div style={{ color: stuck ? '#e76f51' : '#a8dadc', fontSize: 11 }}>{t.status}</div>
+          </div>
+        );
+      })}
     </div>
   );
 }

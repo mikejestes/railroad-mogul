@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { cityDemand, playerCash, routeFeePreview, trainSummaries } from '../../src/store/selectors.ts';
-import { createGameState } from '../../src/sim/state.ts';
+import { cityDemand, playerCash, routeFeePreview, trainSummaries, trainStatus, routeGaps } from '../../src/store/selectors.ts';
+import { createGameState, type GameState } from '../../src/sim/state.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
 import { makeTrain } from '../../src/sim/model/trains.ts';
 
@@ -48,5 +48,47 @@ describe('read-model selectors (U9)', () => {
     const [summary] = trainSummaries(s);
     expect(summary.id).toBe('t1');
     expect(summary.cargoUnits).toBe(6);
+  });
+});
+
+describe('connectivity feedback (the stuck-train fix)', () => {
+  function twoStations(connected: boolean): GameState {
+    const s = createGameState(1);
+    s.world = { width: 6, height: 1, terrain: new Array(6).fill('land') };
+    s.stations.push({ id: 'A', x: 0, y: 0, radius: 1 });
+    s.stations.push({ id: 'B', x: 3, y: 0, radius: 1 });
+    if (connected) for (let x = 0; x < 3; x++) s.track.segments.push({ ax: x, ay: 0, bx: x + 1, by: 0 });
+    return s;
+  }
+
+  it('reports a route gap when stations are not joined by track', () => {
+    expect(routeGaps(twoStations(false), ['A', 'B'])).toHaveLength(1);
+    expect(routeGaps(twoStations(true), ['A', 'B'])).toHaveLength(0);
+  });
+
+  it('train status explains an idle train (no track) vs a running one', () => {
+    const disc = twoStations(false);
+    const t1 = makeTrain('t', 'planet', [
+      { stationId: 'A', loads: [], unload: true },
+      { stationId: 'B', loads: [], unload: true },
+    ]);
+    t1.initialized = true;
+    t1.x = 0;
+    t1.y = 0;
+    t1.targetIndex = 1; // heading to B, which has no track
+    disc.trains.push(t1);
+    expect(trainStatus(disc, t1)).toBe('idle — no track to next stop');
+
+    const conn = twoStations(true);
+    const t2 = makeTrain('t', 'planet', [
+      { stationId: 'A', loads: [], unload: true },
+      { stationId: 'B', loads: [], unload: true },
+    ]);
+    t2.initialized = true;
+    t2.x = 0;
+    t2.y = 0;
+    t2.targetIndex = 1;
+    conn.trains.push(t2);
+    expect(trainStatus(conn, t2)).toBe('running');
   });
 });

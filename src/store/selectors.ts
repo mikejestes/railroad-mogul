@@ -3,6 +3,8 @@ import type { GoodId } from '../sim/model/goods.ts';
 import { GOODS } from '../sim/model/goods.ts';
 import { computeFee } from '../sim/systems/delivery.ts';
 import { inCatchment, type Station } from '../sim/model/track.ts';
+import { findPath } from '../sim/pathfinding.ts';
+import type { Train } from '../sim/model/trains.ts';
 
 /**
  * Read-model selectors shared by the map overlays (U9) and the management UI
@@ -78,11 +80,44 @@ export function stationLabel(state: GameState, station: Station): string {
   return city ? `near ${city.name}` : `(${station.x}, ${station.y})`;
 }
 
+/**
+ * Human-readable status for a train — crucially, it explains a stopped train.
+ * A train idles when its route stations aren't joined by a continuous track, so
+ * we surface that instead of leaving it silently motionless (the "why won't my
+ * train move?" gap).
+ */
+export function trainStatus(state: GameState, train: Train): string {
+  if (!train.initialized) return 'starting';
+  const at = train.atStationId ? state.stations.find((s) => s.id === train.atStationId) : null;
+  if (at) return `at ${stationLabel(state, at)}`;
+  const target = state.stations.find((s) => s.id === train.route[train.targetIndex]?.stationId);
+  if (!target) return 'no destination';
+  const path = findPath(state, train.x, train.y, target.x, target.y);
+  return path ? 'running' : 'idle — no track to next stop';
+}
+
+/**
+ * Consecutive route stops NOT joined by track, as readable "A → B" strings.
+ * Used by the Buy Train panel to warn before dispatching a train that can't run.
+ */
+export function routeGaps(state: GameState, stationIds: string[]): string[] {
+  const gaps: string[] = [];
+  for (let i = 0; i + 1 < stationIds.length; i++) {
+    const a = state.stations.find((s) => s.id === stationIds[i]);
+    const b = state.stations.find((s) => s.id === stationIds[i + 1]);
+    if (a && b && !findPath(state, a.x, a.y, b.x, b.y)) {
+      gaps.push(`${stationLabel(state, a)} → ${stationLabel(state, b)}`);
+    }
+  }
+  return gaps;
+}
+
 export interface TrainSummary {
   id: string;
   engineId: string;
   atStationId: string | null;
   cargoUnits: number;
+  status: string;
 }
 
 export function trainSummaries(state: GameState): TrainSummary[] {
@@ -91,5 +126,6 @@ export function trainSummaries(state: GameState): TrainSummary[] {
     engineId: t.engineId,
     atStationId: t.atStationId,
     cargoUnits: t.cars.reduce((n, c) => n + c.qty, 0),
+    status: trainStatus(state, t),
   }));
 }
