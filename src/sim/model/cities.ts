@@ -19,6 +19,8 @@ export interface City {
   backlog: Partial<Record<GoodId, number>>;
   /** Rolling fulfillment score per good (0..1), updated by delivery (U7/U8). */
   fulfillment: Partial<Record<GoodId, number>>;
+  /** Days of sustained freight fulfillment accrued toward the next size tier (U8). */
+  growthProgress: number;
 }
 
 /**
@@ -53,5 +55,6 @@ export function makeCity(id: string, name: string, x: number, y: number, tier = 
     demand: demandForTier(tier),
     backlog: {},
     fulfillment: {},
+    growthProgress: 0,
   };
 }
