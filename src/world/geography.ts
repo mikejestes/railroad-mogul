@@ -34,16 +34,20 @@
  * caller now gets a specific palette member instead, never the generic
  * legacy value.
  *
- * Seeding note (still open, inherited from U1/U2) — the field instance
- * backing `terrainAt` is built once from a fixed placeholder seed
- * (`REFERENCE_FIELD_SEED`), not the game's actual per-run world seed. R1
- * ("function of world seed *and* coordinates") is satisfied at the
- * `fields.ts` layer (U1, tested directly there); wiring the real per-game
- * seed through *this* module's reference instance is out of scope for R6
- * (the only requirement this unit carries) and is left for a future unit if
- * ever needed — `terrainAt` keeps its documented 2-argument shape exactly as
- * KTD5 anticipated ("swapping in a real landmask is documented as a change to
- * `terrainAt` alone"), so nothing about this deferral changes its signature.
+ * Seeding note — the field instance backing `terrainAt`/`elevationAt` is a
+ * module singleton built from a world seed. `generateGame(seed)` calls
+ * `configureTerrainSeed(seed)` once at world creation, so in-game terrain
+ * varies by the real per-run world seed (R1: "function of world seed *and*
+ * coordinates"). Before any world is generated the singleton defaults to
+ * `DEFAULT_TERRAIN_SEED`, so `terrainAt` remains a callable free function
+ * with no setup — the plan's 2-argument shape is preserved exactly as KTD5
+ * anticipated ("swapping in a real landmask is documented as a change to
+ * `terrainAt` alone"). The ambient seed is acceptable here because there is
+ * one world per process, terrain is never serialized, and terrain stays a
+ * pure function of (configured seed, coordinates): the same seed always
+ * yields the same map, so determinism (R10) is unaffected. The mask itself
+ * (`LAND_BOXES`, city tiles) is seed-independent, so coastlines and the
+ * "every city sits on land" guarantee (AE3) hold under any seed.
  *
  * Scale note (U3) — tile coordinates are multiplied by
  * `REFERENCE_FIELD_SCALE` before being handed to the fields, so the ~1120-
@@ -60,7 +64,13 @@
  * TILE_DEGREES per tile, i.e. ~0.9° ≈ ~100 km per tile — continent-scale, the
  * right order for a tycoon map without an unwieldy tile count.
  */
-import { createTerrainFields, classifyTerrain, type TerrainFields } from './fields.ts';
+import {
+  createTerrainFields,
+  classifyTerrain,
+  MIN_ELEVATION,
+  MAX_ELEVATION,
+  type TerrainFields,
+} from './fields.ts';
 
 export const LON_MIN = -11;
 export const LON_MAX = 25;
@@ -98,13 +108,13 @@ export function project(lonlat: LonLat): { x: number; y: number } {
   };
 }
 
-// Placeholder reference seed for the field instance behind `terrainAt` (see
-// "Seeding note" in the module docblock). Threading the real per-game seed
-// through here is deferred — R6, the requirement this unit carries, does not
-// need it (see the docblock). Chosen empirically (of a handful tried) for
-// producing a plausible spread of the palette across the authored landmass
-// at REFERENCE_FIELD_SCALE below, rather than for any other property.
-const REFERENCE_FIELD_SEED = 7;
+// Fallback seed for the field instance behind `terrainAt`, used only until a
+// world is generated (see "Seeding note" in the module docblock). Once
+// `generateGame(seed)` runs it calls `configureTerrainSeed(seed)` and the real
+// per-run seed takes over. Chosen empirically (of a handful tried) for
+// producing a plausible spread of the palette across the authored landmass at
+// REFERENCE_FIELD_SCALE below, rather than for any other property.
+export const DEFAULT_TERRAIN_SEED = 7;
 
 // `fields.ts`'s base frequencies (U1) were tuned and validated against a
 // broad coordinate range, not against this module's ~40x28 tile grid — U2
@@ -121,11 +131,70 @@ const REFERENCE_FIELD_SEED = 7;
 const REFERENCE_FIELD_SCALE = 64;
 
 let referenceFields: TerrainFields | null = null;
+let referenceSeed: number | null = null;
+let landElevationOffset = 0;
 
-/** Lazily build the module's reference field set once, not per tile. */
+// Target median elevation for the authored landmass, in the fields' [-1,1]
+// elevation space. The raw elevation field's DC level is seed-dependent — the
+// low-frequency continent term (`fields.ts`) sits high for some seeds and well
+// below `SEA_LEVEL` for others, which without correction leaves whole
+// landmasses reading as `coast` (the masked-land fallback) on unlucky seeds.
+// Because the authored mask (`LAND_BOXES`) — not the fields — decides land vs
+// sea here, the field's DC level over the landmass is free to be re-centered
+// without touching the coastline. Centering every seed's land median on this
+// value (the natural land median of the well-varied default seed 7, measured
+// over authored-land tiles only) gives every seed the same rich spread that
+// seed produces: lowlands to coast, uplands to hills, tails to mountain. It is
+// deliberately above `HILLS_ELEVATION` (0.14) so the median land tile sits in
+// the hills/farmland band with a real mountain tail, rather than collapsing to
+// coast. A constant offset preserves relief and river validity — it shifts
+// elevation uniformly, so downhill order is unchanged.
+const TARGET_LAND_MEDIAN_ELEVATION = 0.15;
+
+/**
+ * Median raw-field elevation over the authored landmass at grid resolution,
+ * used once per seed to compute `landElevationOffset`. Sampling only authored
+ * land (sea outside the mask is forced regardless) centers the offset on the
+ * terrain the player actually traverses.
+ */
+function medianLandElevation(fields: TerrainFields): number {
+  const samples: number[] = [];
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      if (!isAuthoredLand(x, y) && !isCityTile(x, y)) continue;
+      const { wx, wy } = fieldCoords(x, y);
+      samples.push(fields.elevationAt(wx, wy));
+    }
+  }
+  if (samples.length === 0) return 0;
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor(samples.length / 2)];
+}
+
+/**
+ * Point the module's terrain fields at a world seed. `generateGame(seed)`
+ * calls this once at world creation so `terrainAt`/`elevationAt` reflect the
+ * real per-run seed (see the module docblock's "Seeding note"). Idempotent per
+ * seed — rebuilding only when the seed actually changes keeps repeated calls
+ * cheap and keeps terrain a pure function of the seed. Passing the same seed
+ * that is already configured is a no-op.
+ */
+export function configureTerrainSeed(seed: number): void {
+  const normalized = seed >>> 0;
+  if (referenceSeed === normalized && referenceFields) return;
+  referenceSeed = normalized;
+  referenceFields = createTerrainFields(normalized);
+  // Re-center the landmass so every seed reads as land with variety, not as a
+  // seed-dependent lottery between "all hills" and "all coast".
+  landElevationOffset = TARGET_LAND_MEDIAN_ELEVATION - medianLandElevation(referenceFields);
+}
+
+/** Lazily build the module's reference field set once, not per tile. Falls
+ *  back to `DEFAULT_TERRAIN_SEED` when no world has been generated yet, so
+ *  `terrainAt` stays a callable free function with no setup. */
 function getReferenceFields(): TerrainFields {
-  if (!referenceFields) referenceFields = createTerrainFields(REFERENCE_FIELD_SEED);
-  return referenceFields;
+  if (!referenceFields) configureTerrainSeed(DEFAULT_TERRAIN_SEED);
+  return referenceFields!;
 }
 
 // Authored landmass boxes in lon/lat (U3, KTD5). These are the same coarse
@@ -213,17 +282,21 @@ function climateAt(x: number, y: number): { moisture: number; temperature: numbe
 }
 
 /**
- * Raw elevation at a tile (milestone-2 U7, R10), on the same reference field
+ * Elevation at a tile (milestone-2 U7, R10), on the same reference field
  * instance and coordinate transform `terrainAt` uses internally — so a
  * browser driver can assert, e.g., "this mountain tile has elevation above
  * `MOUNTAIN_ELEVATION`" and get an answer consistent with what `terrainAt`
- * actually classified. Exposed for `dev/debugHook.ts`; not otherwise
- * consumed within this milestone (elevation-priced track costs are
- * milestone 3's job per the plan's Scope Boundaries).
+ * actually classified. Includes the per-seed `landElevationOffset` (see
+ * `configureTerrainSeed`) so the value matches the classification `terrainAt`
+ * derives from it, then re-clamps to the field's `[MIN, MAX]` range. Exposed
+ * for `dev/debugHook.ts`; not otherwise consumed within this milestone
+ * (elevation-priced track costs are milestone 3's job per the plan's Scope
+ * Boundaries).
  */
 export function elevationAt(x: number, y: number): number {
   const { wx, wy } = fieldCoords(x, y);
-  return getReferenceFields().elevationAt(wx, wy);
+  const raw = getReferenceFields().elevationAt(wx, wy);
+  return Math.min(MAX_ELEVATION, Math.max(MIN_ELEVATION, raw + landElevationOffset));
 }
 
 /**

@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { generateGame, RAW_FAVORED_TERRAIN, MIN_EXTRACTOR_SEPARATION } from '../../src/world/generate.ts';
 import { serialize } from '../../src/sim/state.ts';
-import { CITY_SEEDS, project, terrainAt, GRID_WIDTH, GRID_HEIGHT } from '../../src/world/geography.ts';
+import {
+  CITY_SEEDS,
+  project,
+  terrainAt,
+  configureTerrainSeed,
+  GRID_WIDTH,
+  GRID_HEIGHT,
+} from '../../src/world/geography.ts';
 import { RAW_INDUSTRY_TYPES } from '../../src/sim/model/goods.ts';
 
 describe('world generation (U3, KTD5)', () => {
@@ -73,6 +80,33 @@ describe('world generation (U3, KTD5)', () => {
     expect(seen.size).toBeGreaterThanOrEqual(4);
   });
 
+  it('R1: terrain varies by world seed — two seeds produce visibly different maps', () => {
+    // Sampling a full-grid terrain map for two seeds; the authored coastline
+    // mask is seed-independent, so the interiors must differ for the fields to
+    // be genuinely driven by the seed rather than a fixed placeholder.
+    const mapFor = (seed: number): string => {
+      configureTerrainSeed(seed);
+      const rows: string[] = [];
+      for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) rows.push(terrainAt(x, y));
+      }
+      return rows.join('|');
+    };
+    expect(mapFor(1)).not.toBe(mapFor(2));
+  });
+
+  it('R1: terrain is a pure function of the configured seed — order-independent', () => {
+    const sampleAt5 = () => {
+      configureTerrainSeed(5);
+      return terrainAt(20, 14) + terrainAt(10, 8) + terrainAt(30, 20);
+    };
+    const first = sampleAt5();
+    // Interleave a different seed, then reconfigure back to 5.
+    configureTerrainSeed(9999);
+    terrainAt(20, 14);
+    expect(sampleAt5()).toBe(first);
+  });
+
   it('serialize() output no longer contains a terrain array, and the world round-trips through save/load unchanged', () => {
     const state = generateGame(5);
     expect(serialize(state)).not.toContain('"terrain"');
@@ -100,13 +134,26 @@ describe('resource placement with spatial logic (U6, R8)', () => {
     }
   });
 
-  it('every raw-extractor industry sits on a terrain type its recipe favors', () => {
+  it('every raw-extractor sits on favored terrain, unless the seed offered none of it', () => {
+    // Affinity is a strong preference with a guaranteed-placement fallback
+    // (U6 docblock): a type places off-favored only when this seed's landmass
+    // had no favored terrain for it at all — never mixing favored and fallback
+    // sites for the same type. So for each type, either every site is favored,
+    // or none is.
     for (const seed of SEEDS) {
       const state = generateGame(seed);
+      const byType = new Map<string, boolean[]>();
       for (const ind of state.industries) {
         const favored = RAW_FAVORED_TERRAIN[ind.type];
         if (!favored) continue; // processors have no terrain affinity (U6 docblock)
-        expect(favored).toContain(terrainAt(ind.x, ind.y));
+        const onFavored = favored.includes(terrainAt(ind.x, ind.y));
+        if (!byType.has(ind.type)) byType.set(ind.type, []);
+        byType.get(ind.type)!.push(onFavored);
+      }
+      for (const [, onFavoredFlags] of byType) {
+        const allFavored = onFavoredFlags.every((f) => f);
+        const noneFavored = onFavoredFlags.every((f) => !f);
+        expect(allFavored || noneFavored).toBe(true);
       }
     }
   });

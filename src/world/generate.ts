@@ -1,4 +1,4 @@
-import { CITY_SEEDS, GRID_HEIGHT, GRID_WIDTH, project, terrainAt, type Terrain } from './geography.ts';
+import { CITY_SEEDS, GRID_HEIGHT, GRID_WIDTH, project, terrainAt, configureTerrainSeed, type Terrain } from './geography.ts';
 import { createGameState, STARTING_CAPITAL, type GameState } from '../sim/state.ts';
 import { makeCity } from '../sim/model/cities.ts';
 import { makeIndustry } from '../sim/model/industries.ts';
@@ -48,6 +48,13 @@ export function generateGame(seed: number): GameState {
   const state = createGameState(seed);
   state.moneyCents = STARTING_CAPITAL;
   state.world = { width: GRID_WIDTH, height: GRID_HEIGHT };
+
+  // Point the shared terrain fields at this world's seed *before* any
+  // `terrainAt` call below (city and industry placement both query it), so the
+  // whole world — and everything the renderer later samples — is generated
+  // from one seed (see geography.ts "Seeding note").
+  configureTerrainSeed(seed);
+
   state.rivers = buildRiverGraph(seed, GRID_WIDTH, GRID_HEIGHT);
 
   // 1. Cities at their real projected positions.
@@ -176,6 +183,16 @@ function placeClusteredSites(
  * Place raw extractors on terrain their recipe favors, clustered and spaced
  * (U6, R8). `occupied` is shared with `placeProcessors` so nothing placed
  * later can land on a tile an extractor already claimed.
+ *
+ * Terrain affinity is a strong preference, not an absolute: now that terrain
+ * varies by world seed, some seeds produce a landmass with too little of a
+ * type's favored terrain (a Europe with few mountains) to place even one
+ * extractor there. Rather than let a resource type vanish from the run —
+ * which would make the run unplayable and violates R8's "no resource type can
+ * be absent" guarantee — placement falls back to any land tile *only* when
+ * favored terrain yields zero sites for a type. When favored terrain is
+ * available at all, every site of that type stays on it, so the affinity is
+ * real wherever the seed permits it.
  */
 function placeRawIndustries(
   state: GameState,
@@ -185,8 +202,14 @@ function placeRawIndustries(
   let n = 0;
   for (const type of RAW_INDUSTRY_TYPES) {
     const favored = RAW_FAVORED_TERRAIN[type] ?? [];
-    const candidates = landTiles.filter((tile) => favored.includes(terrainAt(tile.x, tile.y)));
-    const sites = placeClusteredSites(state.rng, candidates, RAW_PER_TYPE, occupied);
+    const favoredTiles = landTiles.filter((tile) => favored.includes(terrainAt(tile.x, tile.y)));
+    let sites = placeClusteredSites(state.rng, favoredTiles, RAW_PER_TYPE, occupied);
+    // Guaranteed-placement fallback: if this seed's favored terrain gave the
+    // type nothing, place it on the best available land so no resource type is
+    // ever absent from a run (R8).
+    if (sites.length === 0) {
+      sites = placeClusteredSites(state.rng, landTiles, RAW_PER_TYPE, occupied);
+    }
     for (const site of sites) {
       state.industries.push(makeIndustry(`ind-${n++}`, type, site.x, site.y));
     }

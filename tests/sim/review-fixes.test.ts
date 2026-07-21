@@ -7,6 +7,7 @@ import { makeTrain, engineById, totalCargo } from '../../src/sim/model/trains.ts
 import { serializeSave, deserializeSave } from '../../src/persistence/saveStore.ts';
 import { layTrack, buildStation, segmentWeight, TRACK_COST_PER_SEGMENT, MOUNTAIN_SURCHARGE } from '../../src/sim/model/track.ts';
 import { findPath } from '../../src/sim/pathfinding.ts';
+import { terrainAt, GRID_WIDTH, GRID_HEIGHT } from '../../src/world/geography.ts';
 
 // U3: terrain is no longer a stored array a fixture can fill with a uniform
 // placeholder — it comes from `terrainAt(x, y)` (real, authored geography).
@@ -15,6 +16,22 @@ import { findPath } from '../../src/sim/pathfinding.ts';
 // rather than the tile origin (open Atlantic).
 const OX = 17;
 const OY = 0;
+
+type Tile = { x: number; y: number };
+/** First horizontally-adjacent tile pair (scanning the grid in row-major
+ *  order) whose two tiles satisfy `pred`, or null if none does. Lets a test
+ *  locate a terrain feature by property instead of by a hardcoded coordinate
+ *  that terrain tuning could invalidate. */
+function findAdjacent(pred: (a: Tile, b: Tile) => boolean): { a: Tile; b: Tile } | null {
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH - 1; x++) {
+      const a = { x, y };
+      const b = { x: x + 1, y };
+      if (pred(a, b)) return { a, b };
+    }
+  }
+  return null;
+}
 
 function landWorld(w: number, h: number): GameState {
   const s = createGameState(1);
@@ -136,23 +153,31 @@ describe('review fixes', () => {
   });
 
   it('mountain track costs a surcharge and weighs more for routing', () => {
-    // A specific real coordinate pair verified (empirically, against the
-    // actual reference field/seed) to both classify as `mountain` — distinct
-    // from the (OX, OY) buildable anchor above, since that anchor was chosen
-    // to avoid mountain/sea entirely.
-    const [mx, my] = [29, 6];
+    // Terrain is derived from the seed, so this scans for a real mountain tile
+    // with a non-sea neighbour (a buildable segment with a mountain endpoint)
+    // rather than hardcoding a coordinate that a later terrain-tuning change
+    // could reclassify. `createGameState` does not configure a seed, so this
+    // runs against the module's default terrain (see geography.ts).
+    const mountainSeg = findAdjacent((a, b) => (terrainAt(a.x, a.y) === 'mountain' || terrainAt(b.x, b.y) === 'mountain'));
+    expect(mountainSeg, 'default terrain has no buildable mountain segment').not.toBeNull();
+    const { a: m0, b: m1 } = mountainSeg!;
+
     const s = createGameState(1);
-    s.world = { width: mx + 2, height: my + 1 };
+    s.world = { width: GRID_WIDTH, height: GRID_HEIGHT };
     s.moneyCents = 1_000_000_00;
     const before = s.moneyCents;
-    expect(layTrack(s, mx, my, mx + 1, my)).toBe(true); // buildable -> mountain
+    expect(layTrack(s, m0.x, m0.y, m1.x, m1.y)).toBe(true); // buildable -> mountain
     expect(before - s.moneyCents).toBe(TRACK_COST_PER_SEGMENT + MOUNTAIN_SURCHARGE);
 
-    const mountainSeg = segmentWeight(s.world, { ax: mx, ay: my, bx: mx + 1, by: my });
-    // A separate coordinate pair verified to be uniform cost-1 (plains), for
-    // an apples-to-apples "mountain costs more" comparison.
-    const flatSeg = segmentWeight(s.world, { ax: 36, ay: 0, bx: 37, by: 0 });
-    expect(mountainSeg).toBeGreaterThan(flatSeg);
+    // A non-mountain, non-sea segment for an apples-to-apples "mountain costs
+    // more" comparison.
+    const flat = findAdjacent(
+      (a, b) => terrainAt(a.x, a.y) !== 'sea' && terrainAt(b.x, b.y) !== 'sea' && terrainAt(a.x, a.y) !== 'mountain' && terrainAt(b.x, b.y) !== 'mountain',
+    );
+    expect(flat).not.toBeNull();
+    const mountainWeight = segmentWeight(s.world, { ax: m0.x, ay: m0.y, bx: m1.x, by: m1.y });
+    const flatWeight = segmentWeight(s.world, { ax: flat!.a.x, ay: flat!.a.y, bx: flat!.b.x, by: flat!.b.y });
+    expect(mountainWeight).toBeGreaterThan(flatWeight);
   });
 
   it('building over sea is rejected; cost only charged on success', () => {
