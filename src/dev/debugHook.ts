@@ -5,6 +5,8 @@ import { applyIntent, buyTrain } from '../store/applyIntents.ts';
 import type { Camera, Rect } from '../render/camera.ts';
 import type { ZoomTierId } from '../render/zoomTiers.ts';
 import { terrainAt, elevationAt, type Terrain } from '../world/geography.ts';
+import { surveyRoute as runSurveyRoute, type SurveyResult } from '../sim/surveying.ts';
+import type { Tile } from '../sim/pathfinding.ts';
 
 /**
  * Dev-only inspection & control hook (installed behind import.meta.env.DEV).
@@ -34,6 +36,15 @@ import { terrainAt, elevationAt, type Terrain } from '../world/geography.ts';
  * it here reads state nothing else on this hook reads and cannot affect the
  * determinism gate (R10): sampling it any number of times, in any order, from
  * automation never mutates `state` or the save.
+ *
+ * Route-surveying milestone U7 closes the milestone with the same pattern:
+ * `surveyRoute` re-exports `sim/surveying.ts`'s pure function verbatim
+ * (read-only — never mutates `state` or dispatches anything, so a browser
+ * driver can assert a proposal's price/grade/refusal by value before ever
+ * touching Commit) and `commitRoute` follows the `buyTrain`/`layTrack`
+ * precedent of routing through `applyNow` — the exact `commitRoute` intent
+ * `SurveyPanel`'s Commit button dispatches (U6), just applied synchronously
+ * so automation doesn't depend on the rAF loop draining it.
  */
 export interface DebugApi {
   /** Live game state (always current). */
@@ -49,6 +60,17 @@ export interface DebugApi {
   layTrack(ax: number, ay: number, bx: number, by: number): void;
   /** Create a train looping between two stations; returns its id. */
   buyTrain(fromStationId: string, toStationId: string, engineId?: string): string;
+  /** Read-only preview of a survey (U7) — the same pure `surveyRoute` the UI
+   *  previews with and `commitRoute` (below) re-runs at commit time (KTD2).
+   *  Never mutates `state`; safe to call any number of times for value
+   *  assertions (price, grade, itemized steps, or a refusal reason). */
+  surveyRoute(waypoints: Tile[]): SurveyResult;
+  /** Commit a route by waypoints (U7) — dispatches the same `commitRoute`
+   *  intent `SurveyPanel`'s Commit button does, applied immediately via
+   *  `applyNow` rather than queued, so it lands without depending on the
+   *  rAF loop. A no-op (per `applyIntent`'s own refusal handling) if the
+   *  waypoints don't survey to a buildable, affordable route. */
+  commitRoute(waypoints: Tile[]): void;
   /** Live camera view state (always current) — scale (pixels per world unit),
    *  the current semantic zoom tier, and the world rect currently on screen. */
   readonly camera: {
@@ -110,6 +132,8 @@ export function installDebugHook(store: GameStore, clock: GameClock, seed: numbe
     },
     buildStation: (x, y, radius = 2) => applyNow({ kind: 'buildStation', x, y, radius }),
     layTrack: (ax, ay, bx, by) => applyNow({ kind: 'layTrack', ax, ay, bx, by }),
+    surveyRoute: (waypoints) => runSurveyRoute(store.getState(), waypoints),
+    commitRoute: (waypoints) => applyNow({ kind: 'commitRoute', waypoints }),
     buyTrain: (fromStationId, toStationId, engineId = 'american') => {
       const ok = buyTrain(store.getState(), engineId, [fromStationId, toStationId]);
       if (!ok) throw new Error('buyTrain failed: engine unavailable/unaffordable or fewer than 2 valid stations');

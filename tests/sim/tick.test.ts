@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { createGameState, addMoney, serialize, type GameState } from '../../src/sim/state.ts';
 import { tick, type System } from '../../src/sim/tick.ts';
 import { nextInt } from '../../src/sim/rng.ts';
+import { generateGame } from '../../src/world/generate.ts';
+import { applyIntent } from '../../src/store/applyIntents.ts';
+import type { Intent } from '../../src/store/gameStore.ts';
 
 // A sample system that consumes the RNG and mutates integer money, so the
 // determinism assertions exercise the ordered-systems + seeded-RNG path, not
@@ -58,5 +61,31 @@ describe('simulation kernel', () => {
     const restored: GameState = JSON.parse(snapshot);
     for (let i = 0; i < 10; i++) tick(restored, 1, [rngIncomeSystem]);
     expect(serialize(restored)).toBe(liveFinal);
+  });
+});
+
+describe('route surveying close-out (milestone 3 U7, R10)', () => {
+  it('R10: a committed route parked for 365 sim days changes moneyCents by exactly zero — track carries no recurring cost', () => {
+    const s = generateGame(21);
+    // Same short, real, non-sea spur tests/persistence/roundtrip.test.ts's
+    // route-commitment suite already verified against this seed.
+    const commitParisSpur: Intent = { kind: 'commitRoute', waypoints: [{ x: 15, y: 12 }, { x: 17, y: 12 }] };
+    applyIntent(s, commitParisSpur);
+    expect(s.routes).toHaveLength(1); // the one-time build cost has already been paid
+    const afterCommit = s.moneyCents;
+
+    for (let day = 0; day < 365; day++) tick(s);
+
+    expect(s.moneyCents).toBe(afterCommit);
+  });
+
+  it('the full determinism suite (Verification Contract) passes with routes and structured segments present: same seed, same intents, byte-identical serialization', () => {
+    const run = (): GameState => {
+      const s = generateGame(21);
+      applyIntent(s, { kind: 'commitRoute', waypoints: [{ x: 15, y: 12 }, { x: 17, y: 12 }] });
+      for (let i = 0; i < 30; i++) tick(s);
+      return s;
+    };
+    expect(serialize(run())).toBe(serialize(run()));
   });
 });
