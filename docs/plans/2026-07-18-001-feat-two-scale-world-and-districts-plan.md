@@ -15,7 +15,7 @@ execution: code
 
 - **Objective:** Give the world two scales joined by continuous zoom — the existing continental network on top, and a street-scale district around each station underneath — so that the supply chain the player hauls becomes visible as built form, and so that laying track and siting stations become decisions with terrain, cost, and consequence behind them.
 - **Product authority:** Solo creator / product owner (mikejestes@gmail.com).
-- **Open blockers:** None for milestones 1–5. Milestone 6 is blocked on the speculation exploit surface (see that plan's Outstanding Questions).
+- **Open blockers:** None. Milestone 6's speculation-exploit blocker was resolved during planning by its charter design (see that plan's KTD1), pending product-owner sign-off recorded in its Assumptions.
 
 This document is the umbrella Product Contract. Implementation is split across six milestone plans listed below; this file holds the requirements they trace to and is not itself executable.
 
@@ -29,12 +29,12 @@ Six milestones, dependency-ordered. Each carries its own Product Contract slice 
 |---|---|---|---|---|
 | 1 | `docs/plans/2026-07-18-002-feat-camera-and-semantic-zoom-plan.md` | R1–R5 | — | implementation-ready |
 | 2 | `docs/plans/2026-07-18-003-feat-procedural-terrain-substrate-plan.md` | R20, R21, R25–R28 | 1 | implementation-ready |
-| 3 | `docs/plans/2026-07-18-004-feat-route-surveying-and-track-economics-plan.md` | R19, R21–R24 | 2 | requirements-only |
-| 4 | `docs/plans/2026-07-18-005-feat-city-districts-and-organic-growth-plan.md` | R6–R9, R25–R26 | 1, 2 | requirements-only |
-| 5 | `docs/plans/2026-07-18-006-feat-station-siting-type-and-severance-plan.md` | R10–R15 | 4 | requirements-only |
-| 6 | `docs/plans/2026-07-18-007-feat-land-economics-and-speculation-plan.md` | R16–R18 | 3, 5 | requirements-only |
+| 3 | `docs/plans/2026-07-18-004-feat-route-surveying-and-track-economics-plan.md` | R19, R21–R24 | 2 | implementation-ready |
+| 4 | `docs/plans/2026-07-18-005-feat-city-districts-and-organic-growth-plan.md` | R6–R9, R25–R26 | 1, 2 | implementation-ready |
+| 5 | `docs/plans/2026-07-18-006-feat-station-siting-type-and-severance-plan.md` | R10–R15 | 4 | implementation-ready |
+| 6 | `docs/plans/2026-07-18-007-feat-land-economics-and-speculation-plan.md` | R16–R18 | 3, 5 | implementation-ready |
 
-Milestones 3 and 4 are independent of each other and can proceed in either order once 2 lands. Milestones 3–6 stay requirements-only until their upstream dependency ships, because their technical decisions are stated in terms of APIs that do not exist yet.
+Milestones 3 and 4 are independent of each other and can proceed in either order once 2 lands (2 has shipped). Milestones 3–6 were enriched to implementation-ready on 2026-07-20, after milestones 1–2 landed on main. Milestone 6's speculation-exploit blocker is resolved in its plan by the charter design (its KTD1), adopted in planning and flagged for product-owner sign-off there.
 
 **R1 is reworded in milestone 1.** The canvas already fills the window and resizes (`src/render/mapRenderer.ts:19`, `index.html:9-10`); the world does not, because it draws at a fixed 22px per tile. The gap is world scaling, not canvas resizing.
 
