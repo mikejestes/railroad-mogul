@@ -29,19 +29,27 @@ describe('store bridge and intents (U10)', () => {
     expect(store.drainIntents()).toHaveLength(0); // drained
   });
 
+  // U3: terrain is no longer a stored array a fixture can fill with a
+  // uniform placeholder — it comes from `terrainAt(x, y)` (real, authored
+  // geography). Anchor at a coordinate range verified never to be sea (see
+  // tests/sim/movement.test.ts's LINE_OX/LINE_OY) rather than the tile
+  // origin (open Atlantic).
+  const OX = 17;
+  const OY = 0;
+
   it('applies a layTrack intent to sim state', () => {
     const s = createGameState(1);
-    s.world = { width: 4, height: 2, terrain: new Array(8).fill('land') };
+    s.world = { width: OX + 4, height: OY + 2 };
     s.moneyCents = 1_000_000_00;
-    applyIntent(s, { kind: 'layTrack', ax: 0, ay: 0, bx: 1, by: 0 });
+    applyIntent(s, { kind: 'layTrack', ax: OX, ay: OY, bx: OX + 1, by: OY });
     expect(s.track.segments).toHaveLength(1);
   });
 
   it('applies a buildStation intent to sim state', () => {
     const s = createGameState(1);
-    s.world = { width: 4, height: 2, terrain: new Array(8).fill('land') };
+    s.world = { width: OX + 4, height: OY + 2 };
     s.moneyCents = 1_000_000_00;
-    applyIntent(s, { kind: 'buildStation', x: 1, y: 1, radius: 2 });
+    applyIntent(s, { kind: 'buildStation', x: OX + 1, y: OY + 1, radius: 2 });
     expect(s.stations).toHaveLength(1);
     expect(s.stations[0].radius).toBe(2);
   });

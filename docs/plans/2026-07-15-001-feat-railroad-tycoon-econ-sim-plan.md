@@ -1,5 +1,5 @@
 ---
-title: Railroad Economy Sim - Plan
+title: Railroad Mogul - Plan
 type: feat
 date: 2026-07-15
 topic: railroad-tycoon-econ-sim
@@ -9,7 +9,7 @@ product_contract_source: ce-brainstorm
 execution: code
 ---
 
-# Railroad Economy Sim - Plan
+# Railroad Mogul - Plan
 
 ## Goal Capsule
 

@@ -7,7 +7,7 @@ import type { GameState } from '../sim/state.ts';
  * Not unit-tested here (needs a browser IndexedDB); the serialization contract
  * it relies on is proven in the saveStore round-trip tests.
  */
-const DB_NAME = 'railroad-econ-sim';
+const DB_NAME = 'railroad-mogul';
 const STORE = 'saves';
 
 function openDb(): Promise<IDBDatabase> {

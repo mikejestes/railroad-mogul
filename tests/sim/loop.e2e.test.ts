@@ -10,28 +10,36 @@ import { makeTrain } from '../../src/sim/model/trains.ts';
  * at B; sustained fulfillment grows the city and the player earns money.
  * This is the plan's global Definition of Done, proven in the simulation.
  */
+// U3: terrain is no longer a stored array a fixture can fill with a uniform
+// placeholder — it comes from `terrainAt(x, y)` (real, authored geography).
+// Anchor at a coordinate range verified never to be sea (see
+// tests/sim/movement.test.ts's LINE_OX/LINE_OY) rather than the tile origin
+// (open Atlantic).
+const OX = 17;
+const OY = 0;
+
 function slice(): GameState {
   const s = createGameState(1);
   s.moneyCents = STARTING_CAPITAL;
-  s.world = { width: 4, height: 3, terrain: new Array(12).fill('land') };
-  s.stations.push({ id: 'A', x: 0, y: 0, radius: 1 });
-  s.stations.push({ id: 'B', x: 2, y: 0, radius: 1 });
-  s.track.segments.push({ ax: 0, ay: 0, bx: 1, by: 0 });
-  s.track.segments.push({ ax: 1, ay: 0, bx: 2, by: 0 });
+  s.world = { width: OX + 4, height: OY + 3 };
+  s.stations.push({ id: 'A', x: OX, y: OY, radius: 1 });
+  s.stations.push({ id: 'B', x: OX + 2, y: OY, radius: 1 });
+  s.track.segments.push({ ax: OX, ay: OY, bx: OX + 1, by: OY });
+  s.track.segments.push({ ax: OX + 1, ay: OY, bx: OX + 2, by: OY });
 
   // Food plant at A, kept supplied so it keeps producing food.
   s.industries.push({
     id: 'plant',
     type: 'foodPlant',
-    x: 0,
-    y: 0,
+    x: OX,
+    y: OY,
     output: 'food',
     outputStock: 8,
     inputStock: { grain: 100_000 },
   });
 
   // City at B that demands food (tier 0).
-  s.cities.push(makeCity('metro', 'Metro', 2, 0, 0));
+  s.cities.push(makeCity('metro', 'Metro', OX + 2, OY, 0));
 
   // A train that loads food at A and delivers it at B, looping.
   const train = makeTrain('t', 'american', [

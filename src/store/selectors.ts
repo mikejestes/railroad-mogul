@@ -1,10 +1,12 @@
 import type { GameState } from '../sim/state.ts';
 import type { GoodId } from '../sim/model/goods.ts';
-import { GOODS } from '../sim/model/goods.ts';
+import { GOODS, RECIPES } from '../sim/model/goods.ts';
 import { computeFee } from '../sim/systems/delivery.ts';
 import { inCatchment, type Station } from '../sim/model/track.ts';
 import { findPath } from '../sim/pathfinding.ts';
 import type { Train } from '../sim/model/trains.ts';
+import type { Industry } from '../sim/model/industries.ts';
+import { OUTPUT_CAP } from '../sim/systems/production.ts';
 
 /**
  * Read-model selectors shared by the map overlays (U9) and the management UI
@@ -128,4 +130,27 @@ export function trainSummaries(state: GameState): TrainSummary[] {
     cargoUnits: t.cars.reduce((n, c) => n + c.qty, 0),
     status: trainStatus(state, t),
   }));
+}
+
+/**
+ * Whether a processor is currently starved of at least one input good it
+ * needs for its recipe (U6/R7) — the reason a mill can sit idle even with
+ * inbound rail service, surfaced so the map can show it at a glance instead
+ * of the player having to open a panel to find out. Raw extractors have no
+ * recipe inputs (`src/sim/model/goods.ts`), so they are never starved.
+ */
+export function industryStarved(industry: Industry): boolean {
+  const recipe = RECIPES[industry.type];
+  const inputGoods = Object.keys(recipe.inputs) as GoodId[];
+  return inputGoods.some((good) => (industry.inputStock[good] ?? 0) < recipe.inputs[good]!);
+}
+
+/**
+ * Normalized output-stock pressure (0..1), reaching its maximum exactly at
+ * `OUTPUT_CAP` (`src/sim/systems/production.ts`) — imported rather than
+ * duplicated, so the two never drift. Used to show how close an industry is
+ * to backing up and needing a pickup (U6/R7).
+ */
+export function industryOutputPressure(industry: Industry): number {
+  return Math.min(1, industry.outputStock / OUTPUT_CAP);
 }
