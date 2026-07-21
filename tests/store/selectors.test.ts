@@ -8,12 +8,16 @@ import {
   routeGaps,
   industryStarved,
   industryOutputPressure,
+  districtTrafficMultiplier,
 } from '../../src/store/selectors.ts';
 import { createGameState, type GameState } from '../../src/sim/state.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
 import { makeTrain } from '../../src/sim/model/trains.ts';
 import { makeIndustry } from '../../src/sim/model/industries.ts';
+import { makeDistrict, EPISODE_TARGET, AGE_SPAN_DAYS } from '../../src/sim/model/districts.ts';
 import { OUTPUT_CAP } from '../../src/sim/systems/production.ts';
+import { demandSystem } from '../../src/sim/systems/demand.ts';
+import { tick } from '../../src/sim/tick.ts';
 
 describe('read-model selectors (U9)', () => {
   it('reports a city\'s live demand, most-wanted first', () => {
@@ -143,5 +147,73 @@ describe('connectivity feedback (the stuck-train fix)', () => {
     t2.targetIndex = 1;
     conn.trains.push(t2);
     expect(trainStatus(conn, t2)).toBe('running');
+  });
+});
+
+describe('districtTrafficMultiplier re-export (M4 U5, KTD5)', () => {
+  it('is re-exported from src/store/selectors.ts, the sim model implementation it wraps', () => {
+    const s = createGameState(1);
+    const city = makeCity('c', 'C', 0, 0, 1);
+    s.cities.push(city);
+    // No districted station in range: base multiplier.
+    expect(districtTrafficMultiplier(s, city)).toBe(1);
+  });
+
+  it('a healthy district in range raises the multiplier through the re-exported path too', () => {
+    const s = createGameState(1);
+    const city = makeCity('c', 'C', 0, 0, 1);
+    s.cities.push(city);
+    s.stations.push({ id: 'stn', x: 0, y: 0, radius: 2 });
+    const d = makeDistrict('dst', { id: 'stn', x: 0, y: 0 });
+    d.residential = 0.4;
+    d.commercial = 0.35;
+    d.industrial = 0.3;
+    d.density = 0.6;
+    d.development = 0.5;
+    d.episodeCount = EPISODE_TARGET;
+    d.firstGrowthDay = 0;
+    d.lastGrowthDay = AGE_SPAN_DAYS;
+    s.districts.push(d);
+    expect(districtTrafficMultiplier(s, city)).toBeGreaterThan(1);
+  });
+});
+
+describe('freight demand isolation from district health (M4 U5, KTD9)', () => {
+  it('freight backlog growth is byte-identical with and without a healthy district present', () => {
+    const withoutDistrict = createGameState(1);
+    const cityA = makeCity('c', 'C', 0, 0, 1);
+    withoutDistrict.cities.push(cityA);
+
+    const withDistrict = createGameState(1);
+    const cityB = makeCity('c', 'C', 0, 0, 1);
+    withDistrict.cities.push(cityB);
+    withDistrict.stations.push({ id: 'stn', x: 0, y: 0, radius: 2 });
+    const d = makeDistrict('dst', { id: 'stn', x: 0, y: 0 });
+    d.residential = 0.4;
+    d.commercial = 0.35;
+    d.industrial = 0.3;
+    d.density = 0.6;
+    d.development = 0.5;
+    d.episodeCount = EPISODE_TARGET;
+    d.firstGrowthDay = 0;
+    d.lastGrowthDay = AGE_SPAN_DAYS;
+    withDistrict.districts.push(d);
+    // Confirm this district is actually healthy (multiplier > 1), so a
+    // passing test isn't accidentally vacuous.
+    expect(districtTrafficMultiplier(withDistrict, cityB)).toBeGreaterThan(1);
+
+    // Few enough ticks that passenger backlog doesn't saturate at its cap —
+    // saturation would erase the very difference this test measures.
+    for (let i = 0; i < 5; i++) {
+      tick(withoutDistrict, 1, [demandSystem]);
+      tick(withDistrict, 1, [demandSystem]);
+    }
+
+    // Freight goods (food/goods/steel) are untouched by district health...
+    expect(cityB.backlog.food).toBe(cityA.backlog.food);
+    expect(cityB.backlog.goods).toBe(cityA.backlog.goods);
+    expect(cityB.backlog.steel).toBe(cityA.backlog.steel);
+    // ...while passenger/mail backlog, which does couple to it, differs.
+    expect(cityB.backlog.passengers).not.toBe(cityA.backlog.passengers);
   });
 });
