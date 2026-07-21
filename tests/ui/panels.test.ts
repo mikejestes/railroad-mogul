@@ -56,6 +56,22 @@ describe('store bridge and intents (U10)', () => {
     expect(s.stations).toHaveLength(1);
     expect(s.stations[0].radius).toBe(2);
   });
+
+  it('threads stationType end to end: intent -> stored station (milestone 5 U1, R4)', () => {
+    const s = createGameState(1);
+    s.world = { width: OX + 4, height: OY + 2 };
+    s.moneyCents = 1_000_000_00;
+    applyIntent(s, { kind: 'buildStation', x: OX + 1, y: OY + 1, radius: 2, stationType: 'passenger' });
+    expect(s.stations[0].stationType).toBe('passenger');
+  });
+
+  it('a buildStation intent with no stationType stores the mixed default', () => {
+    const s = createGameState(1);
+    s.world = { width: OX + 4, height: OY + 2 };
+    s.moneyCents = 1_000_000_00;
+    applyIntent(s, { kind: 'buildStation', x: OX + 1, y: OY + 1, radius: 2 });
+    expect(s.stations[0].stationType).toBe('mixed');
+  });
 });
 
 describe('buy-train flow (U6/U10)', () => {

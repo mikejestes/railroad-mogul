@@ -28,6 +28,16 @@ import { effectiveGradeFor, type StepCost, type TrackStructure } from './trackCo
  * `layTrack`/`canLayTrack` and their flat cost model are untouched (R12) —
  * hand-laid track never carries a structure, and the old model stays for
  * tests and the debug hook, independent of `trackCost.ts`.
+ *
+ * Milestone 5 U1 (KTD3): `Station` gains `stationType` — a second, independent
+ * axis from `radius`. Chosen in the build UI at siting time, defaulted to
+ * `'mixed'` here (the single source of truth for the default — see
+ * `buildStation` below) so any caller that omits it, including pre-M5 test
+ * fixtures constructed with an object literal, still gets the neutral type
+ * rather than `undefined`. Type carries no cost of its own (`STATION_COST`
+ * still keys off `radius` alone) and is preserved through relocation
+ * (`moveStation`, U7) — re-typing a station is a re-siting decision the
+ * product has not asked for.
  */
 export interface TrackSegment {
   ax: number;
@@ -58,12 +68,45 @@ export interface Route {
   committedDay: number;
 }
 
+/**
+ * Station type (milestone 5 U1, KTD3): an axis independent of `radius`.
+ * Chosen at siting; shapes what a district becomes around the station
+ * (`STATION_TYPE_MODIFIERS`, `sim/model/districts.ts`, U2) without affecting
+ * catchment size or cost. `'mixed'` is the neutral default — identical to
+ * pre-M5 behavior (regression guard).
+ */
+export type StationType = 'freight' | 'passenger' | 'mixed';
+
+/** The default station type when none is chosen (KTD3) — the single source
+ *  of truth `buildStation` falls back to. */
+export const DEFAULT_STATION_TYPE: StationType = 'mixed';
+
 export interface Station {
   id: string;
   x: number;
   y: number;
   /** Chebyshev catchment radius (Depot 1 / Station 2 / Terminal 3). */
   radius: number;
+  /** Freight yard / passenger terminal / mixed depot (milestone 5, KTD3).
+   *  Independent of `radius`; fixed at siting and preserved through
+   *  relocation. Optional — `buildStation` (below) always sets a concrete
+   *  value for a player-built station, never leaving it `undefined`; the
+   *  field stays optional on the interface only so pre-milestone-5 test
+   *  fixtures across the suite that construct a `Station` literal by hand
+   *  (`{ id, x, y, radius }`, with no opinion about type) keep type-checking
+   *  unchanged. Every reader goes through `stationTypeOf` (below), never
+   *  this field directly, so the 'mixed'-default fallback lives in one
+   *  place. */
+  stationType?: StationType;
+}
+
+/** A station's effective type (KTD3): the stored field, or
+ *  `DEFAULT_STATION_TYPE` ('mixed') when absent — the one place the
+ *  optional-field fallback happens, so `sim/model/districts.ts`'s accrual
+ *  modifiers and the renderer's glyph selection can never disagree about
+ *  what an untyped (pre-M5-fixture) station's type reads as. */
+export function stationTypeOf(station: Station): StationType {
+  return station.stationType ?? DEFAULT_STATION_TYPE;
 }
 
 export interface TrackNetwork {
@@ -143,13 +186,22 @@ export function emitRoute(
   addMoney(state, -survey.totalCents);
 }
 
-/** Build a station if the tile is buildable and affordable; returns success. */
-export function buildStation(state: GameState, id: string, x: number, y: number, radius: number): boolean {
+/** Build a station if the tile is buildable and affordable; returns success.
+ *  `stationType` defaults to `DEFAULT_STATION_TYPE` ('mixed', KTD3) — type
+ *  carries no cost of its own, so it never affects the affordability check. */
+export function buildStation(
+  state: GameState,
+  id: string,
+  x: number,
+  y: number,
+  radius: number,
+  stationType: StationType = DEFAULT_STATION_TYPE,
+): boolean {
   const w = state.world;
   if (!inBounds(w, x, y) || terrainAt(x, y) === 'sea') return false;
   const cost = STATION_COST[Math.min(STATION_COST.length - 1, Math.max(0, radius - 1))];
   if (state.moneyCents < cost) return false;
-  state.stations.push({ id, x, y, radius });
+  state.stations.push({ id, x, y, radius, stationType });
   addMoney(state, -cost);
   return true;
 }

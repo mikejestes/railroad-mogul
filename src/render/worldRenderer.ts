@@ -8,6 +8,7 @@ import type { ZoomTierId } from './zoomTiers.ts';
 import { TerrainChunkManager } from './terrainChunks.ts';
 import type { Tile } from '../sim/pathfinding.ts';
 import type { StepCost, TrackStructure } from '../sim/model/trackCost.ts';
+import { stationTypeOf, type StationType } from '../sim/model/track.ts';
 import { DistrictRenderer } from './districtRenderer.ts';
 
 /**
@@ -181,6 +182,35 @@ export function shouldShowCityLabel(tier: ZoomTierId, population: number): boole
   return tier !== 'continent' || population >= CITY_LABEL_POPULATION_THRESHOLD;
 }
 
+// --- Station type glyphs (milestone 5 U1, R6, KTD3) ------------------------
+
+/** The three station-marker shapes `render` draws from `region` tier inward
+ *  (`stationGlyphFor` below chooses which). `continent` stays a plain square
+ *  for every type — a single small mark at the widest zoom, matching every
+ *  other entity's continent-tier declutter rule. */
+export type StationGlyph = 'square' | 'circle' | 'diamond';
+
+/**
+ * Map a station's type to the mark it draws (R6: distinguishable without
+ * opening a panel). Pure — the logic under the no-rendering-tests policy
+ * (KTD7); `drawStationGlyph` (below, not exported/tested) just carries out
+ * the shape this function names. `'mixed'` keeps the pre-M5 square so a
+ * mixed-depot station reads exactly as every station did before this
+ * milestone (regression-safe default, matching KTD3/KTD4's "mixed is
+ * identity" rule elsewhere).
+ */
+export function stationGlyphFor(stationType: StationType): StationGlyph {
+  switch (stationType) {
+    case 'freight':
+      return 'diamond';
+    case 'passenger':
+      return 'circle';
+    case 'mixed':
+    default:
+      return 'square';
+  }
+}
+
 // --- Rivers (U6, AE3's visibility substrate) -------------------------------
 
 export const RIVER_STROKE_PX = 1.5;
@@ -308,6 +338,24 @@ function drawDashedSegment(
     if (cyclePos >= cycle) cyclePos -= cycle;
   }
   phase.value = (phase.value + len) % cycle;
+}
+
+/** Draw one station glyph (milestone 5 U1, R6) — a small shape dispatch over
+ *  `stationGlyphFor`'s pure answer. Not itself unit-tested (KTD7: it draws),
+ *  kept small and separate from `render` the same way `drawDashedSegment` is. */
+function drawStationGlyph(g: Graphics, glyph: StationGlyph, cx: number, cy: number, size: number, color: number): void {
+  const half = size / 2;
+  switch (glyph) {
+    case 'circle':
+      g.circle(cx, cy, half).fill({ color });
+      break;
+    case 'diamond':
+      g.poly([cx, cy - half, cx + half, cy, cx, cy + half, cx - half, cy]).fill({ color });
+      break;
+    case 'square':
+      g.rect(cx - half, cy - half, size, size).fill({ color });
+      break;
+  }
 }
 
 export class WorldRenderer {
@@ -438,20 +486,26 @@ export class WorldRenderer {
       if (!isWithinVisibleBounds({ x: s.x, y: s.y }, visible, VISIBLE_MARGIN_TILES)) continue;
       const cx = s.x * t + t / 2;
       const cy = s.y * t + t / 2;
-      if (tier === 'local' || tier === 'street') {
-        this.stationLayer.circle(cx, cy, stationMarkerSize / 2).fill({ color: COLORS.station });
-        this.stationLayer
-          .rect(
-            cx - stationMarkerSize * 0.75,
-            cy - stationMarkerSize * 0.75,
-            stationMarkerSize * 1.5,
-            stationMarkerSize * 1.5,
-          )
-          .stroke({ color: COLORS.station, width: catchmentStroke });
-      } else {
+      if (tier === 'continent') {
+        // Widest zoom: a plain square for every type, like every other
+        // entity's continent-tier declutter rule — type is illegible at
+        // this scale regardless of mark shape.
         this.stationLayer
           .rect(cx - stationMarkerSize / 2, cy - stationMarkerSize / 2, stationMarkerSize, stationMarkerSize)
           .fill({ color: COLORS.station });
+      } else {
+        // region inward: the type-distinguishing glyph (R6, KTD3).
+        drawStationGlyph(this.stationLayer, stationGlyphFor(stationTypeOf(s)), cx, cy, stationMarkerSize, COLORS.station);
+        if (tier === 'local' || tier === 'street') {
+          this.stationLayer
+            .rect(
+              cx - stationMarkerSize * 0.75,
+              cy - stationMarkerSize * 0.75,
+              stationMarkerSize * 1.5,
+              stationMarkerSize * 1.5,
+            )
+            .stroke({ color: COLORS.station, width: catchmentStroke });
+        }
       }
       if (tier !== 'continent') {
         this.stationLayer.circle(cx, cy, s.radius * t).stroke({ color: COLORS.catchment, width: catchmentStroke });

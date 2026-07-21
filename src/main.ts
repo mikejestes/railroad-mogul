@@ -12,6 +12,7 @@ import { GameStore } from './store/gameStore.ts';
 import { applyIntent } from './store/applyIntents.ts';
 import { GameClock } from './sim/clock.ts';
 import { installDebugHook } from './dev/debugHook.ts';
+import { DEFAULT_STATION_TYPE, type StationType } from './sim/model/track.ts';
 
 /**
  * Entry point. Wires the whole game together (U10/U12, camera U1):
@@ -108,6 +109,10 @@ async function boot() {
   // threshold, so dragging the map never also surveys a waypoint or drops a
   // station.
   let buildMode: BuildMode = 'none';
+  // Milestone 5 U1 (R4, KTD3): the type picked in BuildPanel for the *next*
+  // buildStation click — boot-scope view state, same status as `buildMode`,
+  // never GameState (App.tsx's docblock).
+  let stationType: StationType = DEFAULT_STATION_TYPE;
   const survey = new SurveyController();
   const canvas = renderer.app.canvas as HTMLCanvasElement;
   let lastPointer = { x: 0, y: 0 };
@@ -143,7 +148,7 @@ async function boot() {
     if (exceedsClickThreshold(dragTotal.dx, dragTotal.dy)) return; // was a pan, not a click
     const { x, y } = tileAt(e.clientX, e.clientY);
     if (buildMode === 'station') {
-      store.dispatch({ kind: 'buildStation', x, y, radius: 2 });
+      store.dispatch({ kind: 'buildStation', x, y, radius: 2, stationType });
     } else if (buildMode === 'survey') {
       survey.click({ x, y });
     }
@@ -193,6 +198,9 @@ async function boot() {
           buildMode = mode;
           survey.reset(); // any mode change clears any pending survey/overlay (both directions)
           canvas.style.cursor = mode === 'none' ? 'default' : 'crosshair';
+        },
+        onStationTypeChange: (t: StationType) => {
+          stationType = t;
         },
         onSurveyCommit: commitSurvey,
         onSurveyCancel: () => survey.reset(),

@@ -10,6 +10,7 @@ import { ClockControls } from './panels/ClockControls.tsx';
 import { BuildPanel, type BuildMode } from './panels/BuildPanel.tsx';
 import { TrainBuilder } from './panels/TrainBuilder.tsx';
 import { SurveyPanel } from './panels/SurveyPanel.tsx';
+import { DEFAULT_STATION_TYPE, type StationType } from '../sim/model/track.ts';
 
 /**
  * Root of the React management overlay (U10). Subscribes to store snapshots
@@ -21,12 +22,19 @@ import { SurveyPanel } from './panels/SurveyPanel.tsx';
  * pointer handling do — the controller's state lives outside React and
  * `GameState` alike; `useSurveyProposal` is this component's only touch
  * point with it.
+ *
+ * Milestone 5 U1 (R4, KTD3): `stationType` is boot-scope view state, same
+ * status as `buildMode` — it only decides what the *next* `buildStation`
+ * click carries, never `GameState` itself. `onStationTypeChange` mirrors
+ * `onBuildModeChange`'s pattern of pushing the chosen value out to
+ * `main.ts`, which reads it at click time.
  */
 export function App({
   store,
   clock,
   survey,
   onBuildModeChange,
+  onStationTypeChange,
   onSurveyCommit,
   onSurveyCancel,
 }: {
@@ -34,16 +42,23 @@ export function App({
   clock: GameClock;
   survey: SurveyController;
   onBuildModeChange?: (mode: BuildMode) => void;
+  onStationTypeChange?: (t: StationType) => void;
   onSurveyCommit?: () => void;
   onSurveyCancel?: () => void;
 }) {
   const state = useGameState(store);
   const surveyProposal = useSurveyProposal(store, survey);
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
+  const [stationType, setStationType] = useState<StationType>(DEFAULT_STATION_TYPE);
 
   const changeBuildMode = (m: BuildMode) => {
     setBuildMode(m);
     onBuildModeChange?.(m);
+  };
+
+  const changeStationType = (t: StationType) => {
+    setStationType(t);
+    onStationTypeChange?.(t);
   };
 
   const row: React.CSSProperties = { display: 'flex', gap: 8, alignItems: 'flex-start' };
@@ -53,7 +68,12 @@ export function App({
       <div style={{ position: 'absolute', top: 12, left: 12, ...row }}>
         <FinancePanel state={state} />
         <ClockControls clock={clock} />
-        <BuildPanel mode={buildMode} onModeChange={changeBuildMode} />
+        <BuildPanel
+          mode={buildMode}
+          onModeChange={changeBuildMode}
+          stationType={stationType}
+          onStationTypeChange={changeStationType}
+        />
       </div>
       <div style={{ position: 'absolute', top: 60, left: 12, width: 240 }}>
         <CityPanel state={state} />

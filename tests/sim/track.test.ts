@@ -7,11 +7,15 @@ import {
   inCatchment,
   industriesInCatchment,
   TRACK_COST_PER_SEGMENT,
+  STATION_COST,
   effectiveGrade,
   gradeWeightMultiplier,
   segmentWeight,
   GRADE_WEIGHT_FACTOR,
+  stationTypeOf,
+  DEFAULT_STATION_TYPE,
   type TrackSegment,
+  type StationType,
 } from '../../src/sim/model/track.ts';
 import { CUTTING_MAX_GRADE } from '../../src/sim/model/trackCost.ts';
 import { moveCostFor, terrainAt } from '../../src/world/geography.ts';
@@ -77,6 +81,49 @@ describe('track building', () => {
     const station = s.stations.find((st) => st.id === 'london-stn')!;
     const found = industriesInCatchment(s, station).map((i) => i.id);
     expect(found).toContain('near');
+  });
+});
+
+describe('station type (milestone 5 U1, R4/R6, KTD3)', () => {
+  it('buildStation defaults to the mixed type when none is given', () => {
+    const s = buildableWorld(4, 4);
+    buildStation(s, 'stn-0', OX, OY, 2);
+    expect(s.stations[0].stationType).toBe('mixed');
+    expect(s.stations[0].stationType).toBe(DEFAULT_STATION_TYPE);
+  });
+
+  it('storing each type end to end: buildStation stores exactly the type it was given', () => {
+    const types: StationType[] = ['freight', 'passenger', 'mixed'];
+    const s = buildableWorld(10, 10);
+    types.forEach((stationType, i) => {
+      buildStation(s, `stn-${i}`, OX + i, OY, 1, stationType);
+    });
+    expect(s.stations.map((st) => st.stationType)).toEqual(types);
+  });
+
+  it('type round-trips through JSON serialization unchanged', () => {
+    const s = buildableWorld(4, 4);
+    buildStation(s, 'stn-0', OX, OY, 2, 'freight');
+    const round = JSON.parse(JSON.stringify(s.stations[0])) as { stationType: StationType };
+    expect(round.stationType).toBe('freight');
+  });
+
+  it("radius and cost are unaffected by type (independent-axes guard, KTD3)", () => {
+    const types: StationType[] = ['freight', 'passenger', 'mixed'];
+    for (const stationType of types) {
+      const s = buildableWorld(4, 4);
+      const before = s.moneyCents;
+      buildStation(s, 'stn', OX, OY, 3, stationType);
+      expect(before - s.moneyCents).toBe(STATION_COST[2]);
+      expect(s.stations[0].radius).toBe(3);
+    }
+  });
+
+  it('stationTypeOf falls back to the default for a station with no stored type (pre-M5 fixture compatibility)', () => {
+    const untyped = { id: 's', x: 0, y: 0, radius: 1 };
+    expect(stationTypeOf(untyped)).toBe(DEFAULT_STATION_TYPE);
+    const typed = { id: 's', x: 0, y: 0, radius: 1, stationType: 'freight' as const };
+    expect(stationTypeOf(typed)).toBe('freight');
   });
 });
 

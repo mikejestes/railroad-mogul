@@ -9,6 +9,7 @@ import { surveyRoute as runSurveyRoute, type SurveyResult } from '../sim/surveyi
 import type { Tile } from '../sim/pathfinding.ts';
 import type { District } from '../sim/model/districts.ts';
 import { generateDistrictScene, type DistrictScene } from '../world/streets.ts';
+import { DEFAULT_STATION_TYPE, type StationType } from '../sim/model/track.ts';
 
 /**
  * Dev-only inspection & control hook (installed behind import.meta.env.DEV).
@@ -71,7 +72,7 @@ export interface DebugApi {
   /** Apply any queued intents now (the rAF loop does this each frame in-app;
    *  call it in automation where a background tab throttles rAF). */
   drain(): void;
-  buildStation(x: number, y: number, radius?: number): void;
+  buildStation(x: number, y: number, radius?: number, stationType?: StationType): void;
   layTrack(ax: number, ay: number, bx: number, by: number): void;
   /** Create a train looping between two stations; returns its id. */
   buyTrain(fromStationId: string, toStationId: string, engineId?: string): string;
@@ -152,7 +153,8 @@ export function installDebugHook(store: GameStore, clock: GameClock, seed: numbe
       for (const intent of store.drainIntents()) applyIntent(store.getState(), intent);
       store.publish(store.getState());
     },
-    buildStation: (x, y, radius = 2) => applyNow({ kind: 'buildStation', x, y, radius }),
+    buildStation: (x, y, radius = 2, stationType = DEFAULT_STATION_TYPE) =>
+      applyNow({ kind: 'buildStation', x, y, radius, stationType }),
     layTrack: (ax, ay, bx, by) => applyNow({ kind: 'layTrack', ax, ay, bx, by }),
     surveyRoute: (waypoints) => runSurveyRoute(store.getState(), waypoints),
     commitRoute: (waypoints) => applyNow({ kind: 'commitRoute', waypoints }),

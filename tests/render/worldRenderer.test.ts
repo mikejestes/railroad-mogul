@@ -12,9 +12,11 @@ import {
   STATION_MARKER_PX,
   CITY_DOT_BASE_PX,
   CITY_LABEL_FONT_PX,
+  stationGlyphFor,
 } from '../../src/render/worldRenderer.ts';
 import type { Rect } from '../../src/render/camera.ts';
 import type { StepCost } from '../../src/sim/model/trackCost.ts';
+import type { StationType } from '../../src/sim/model/track.ts';
 
 /**
  * U5's draw calls themselves are untested by policy (KTD7, no rendering
@@ -170,5 +172,22 @@ describe('city label suppression (R5)', () => {
   it('shows a large city label even at continent tier', () => {
     expect(shouldShowCityLabel('continent', CITY_LABEL_POPULATION_THRESHOLD)).toBe(true);
     expect(shouldShowCityLabel('continent', CITY_LABEL_POPULATION_THRESHOLD + 1)).toBe(true);
+  });
+});
+
+describe('stationGlyphFor (milestone 5 U1, R6, KTD3)', () => {
+  it('maps each station type to a distinct mark', () => {
+    const types: StationType[] = ['freight', 'passenger', 'mixed'];
+    const glyphs = types.map(stationGlyphFor);
+    expect(new Set(glyphs).size).toBe(types.length);
+  });
+
+  it("'mixed' keeps the pre-M5 square (regression-safe default)", () => {
+    expect(stationGlyphFor('mixed')).toBe('square');
+  });
+
+  it('freight and passenger each get their own non-square mark', () => {
+    expect(stationGlyphFor('freight')).toBe('diamond');
+    expect(stationGlyphFor('passenger')).toBe('circle');
   });
 });

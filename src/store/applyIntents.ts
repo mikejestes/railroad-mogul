@@ -69,7 +69,7 @@ export function applyIntent(state: GameState, intent: Intent): void {
       break;
     case 'buildStation': {
       const id = `stn-${state.nextStationId++}`;
-      const built = buildStation(state, id, intent.x, intent.y, intent.radius);
+      const built = buildStation(state, id, intent.x, intent.y, intent.radius, intent.stationType);
       if (built) {
         // buildStation pushes onto state.stations on success; the one it
         // just pushed is the last element (KTD10 — gate district creation on
