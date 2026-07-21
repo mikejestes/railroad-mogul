@@ -11,10 +11,12 @@
  * so a second copy here would be exactly the kind of drift the repo's
  * "no rendering tests, cover the pure policy" discipline warns about.
  *
- * The cache key *is* the quantized derivation input (KTD8): a district's
- * scene is regenerated only when its id, the zoom tier, or its quantized
- * `development`/channel/`density` tuple actually changes — a tick that
- * nudges a channel by a sub-quantum amount reuses the resident texture.
+ * The cache key *is* the derivation input (KTD8): a district's scene is
+ * regenerated when its id, the zoom tier, its quantized
+ * `development`/channel/`density` tuple, its own `cuts.length`, or a nearby
+ * derelict-site count actually changes — a tick that nudges a channel by a
+ * sub-quantum amount (and touches none of the others) reuses the resident
+ * texture.
  *
  * Only the `street` tier mounts this layer (KTD7); `local` and below stay
  * pixel-identical to their pre-M4 marker rendering (`worldRenderer.ts`).
@@ -31,6 +33,7 @@ import type { Camera, Rect } from './camera.ts';
 import type { ZoomTierId } from './zoomTiers.ts';
 import type { GameState } from '../sim/state.ts';
 import type { District } from '../sim/model/districts.ts';
+import { DISTRICT_FOOTPRINT_TILES } from '../sim/model/districts.ts';
 import { quantizeDistrict, generateDistrictScene, extentTilesFor } from '../world/streets.ts';
 import { selectEvictable, type ChunkLruEntry } from './terrainChunks.ts';
 
@@ -78,27 +81,54 @@ export function districtsInView(
 }
 
 /**
- * A district's resident-texture cache key (KTD8): identity, tier, and the
- * exact quantized tuple `generateDistrictScene` derives its scene from — so
- * this key changes exactly when the scene it would regenerate does, no more
- * and no less.
+ * A district's resident-texture cache key (KTD8): identity, tier, the exact
+ * quantized tuple `generateDistrictScene` derives its scene from, the
+ * district's own `cuts.length`, and (via `nearbyDerelictCount`, below) a
+ * count of `state.derelictSites` within this district's footprint — so this
+ * key changes whenever any of those regeneration inputs does.
  *
- * Known milestone-5 limitation: this key does not include a term for
- * `landValueAt` (U6), `district.cuts` (U4/U5), or `state.derelictSites`
- * (U7) — all three can change without any of `quantizeDistrict`'s own
- * fields changing (e.g. a neighboring station's catchment newly overlapping
- * this district's parcels shifts sampled land value with zero channel
- * movement here; a station elsewhere on the map relocating appends a
- * derelict site that could fall inside this district's rendered extent
- * without touching this district's own record at all). A resident texture
- * can therefore go stale until the next channel-driven regeneration. This
- * is a rendering-only staleness gap — GameState/the save are unaffected,
- * and the repo's no-rendering-tests policy leaves this class of key
- * uncovered — noted here rather than silently accepted.
+ * Milestone 5 U7/U4 fix: this key used to omit `cuts`/derelict/land-value
+ * entirely, so a player laying track through their own district could go on
+ * not seeing the vacuum band their own cut just created until some unrelated
+ * channel happened to cross a quantum boundary — "a cut the player cannot
+ * see is a punishment, not a decision." `cuts.length` and a nearby-derelict
+ * count are cheap, monotonically-changing signals that fix exactly that: a
+ * fresh cut or a newly-appeared derelict site anywhere in the district's
+ * reach now invalidates the resident texture immediately. This is a
+ * rendering-only cache key — nothing here is stored in `GameState` or the
+ * save.
+ *
+ * Still-known limitation: this key has no term for `landValueAt` (U6) — a
+ * neighboring station's catchment newly overlapping this district's parcels
+ * can shift sampled land value with zero movement in any term above, so a
+ * resident texture can still go stale on that axis until the next
+ * channel/cut/derelict-driven regeneration. Noted here rather than silently
+ * accepted; the repo's no-rendering-tests policy leaves this class of key
+ * uncovered by tests either way.
  */
-export function districtSceneCacheKey(district: District, tier: ZoomTierId): string {
+export function districtSceneCacheKey(district: District, tier: ZoomTierId, nearbyDerelictCount: number = 0): string {
   const q = quantizeDistrict(district);
-  return `${district.id}:${tier}:${q.development}:${q.residential}:${q.commercial}:${q.industrial}:${q.density}`;
+  return `${district.id}:${tier}:${q.development}:${q.residential}:${q.commercial}:${q.industrial}:${q.density}:${district.cuts.length}:${nearbyDerelictCount}`;
+}
+
+/**
+ * Count of `state.derelictSites` within `district`'s footprint (Chebyshev,
+ * matching `world/streets.ts`'s own derelict-yard filter) — the cheap,
+ * renderer-only signal `districtSceneCacheKey` folds in so a derelict site
+ * appearing elsewhere on the map (any station relocation, anywhere) but
+ * landing inside this district's rendered extent invalidates its resident
+ * texture, even though nothing about this district's own record changed.
+ */
+export function nearbyDerelictCount(state: GameState, district: District): number {
+  let count = 0;
+  for (const site of state.derelictSites) {
+    if (
+      Math.max(Math.abs(site.x - district.anchorX), Math.abs(site.y - district.anchorY)) <= DISTRICT_FOOTPRINT_TILES
+    ) {
+      count++;
+    }
+  }
+  return count;
 }
 
 const USE_COLORS = {
@@ -162,7 +192,7 @@ export class DistrictRenderer {
     const visibleKeys = new Set<string>();
 
     for (const district of inView) {
-      const key = districtSceneCacheKey(district, camera.tier);
+      const key = districtSceneCacheKey(district, camera.tier, nearbyDerelictCount(state, district));
       visibleKeys.add(key);
       let scene = this.resident.get(key);
       if (!scene) {
