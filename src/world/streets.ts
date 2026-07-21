@@ -6,6 +6,14 @@ import {
   DISTRICT_FOOTPRINT_TILES,
   distanceToChord,
 } from '../sim/model/districts.ts';
+import type { GameState } from '../sim/state.ts';
+import {
+  landValueAt,
+  TERRAIN_BASE_CENTS,
+  STATION_UPLIFT_BASE_CENTS,
+  STATION_UPLIFT_DEV_BONUS_CENTS,
+  DISTRICT_DEVELOPMENT_UPLIFT_CENTS,
+} from '../sim/model/landValue.ts';
 
 /**
  * Street-scene generation (M4 U6, KTD8, R2/R9/R11/R12). `generateDistrictScene`
@@ -58,6 +66,32 @@ export const QUANTUM = 1 / 16;
 function quantize(value: number): number {
   return Math.round(value / QUANTUM) * QUANTUM;
 }
+
+/** Milestone 5 U6 (R3, KTD8/KTD10): sampled `landValueAt` cents are
+ *  quantized to this coarse bucket before anything derives from them —
+ *  the same cache-stability discipline `QUANTUM` gives the continuous
+ *  channels above, applied to the newly-sampled value input, so a tick
+ *  that nudges a nearby district's development by a cent's worth of value
+ *  does not regenerate every scene that happens to sample near it. */
+export const VALUE_QUANTUM_CENTS = 50_00;
+
+function quantizeValueCents(cents: number): number {
+  return Math.round(cents / VALUE_QUANTUM_CENTS) * VALUE_QUANTUM_CENTS;
+}
+
+/** A "fully rich" anchor value, for normalizing `anchorValueCents` into the
+ *  0..1 `anchorValueFraction` `heightClassFor` blends in (KTD10) — the sum
+ *  of every positive uplift `landValueAt` can produce at a station's own
+ *  tile at full development, plus the richest terrain base. Not a hard cap
+ *  on `landValueAt` itself (overlapping catchments can exceed it) — only a
+ *  reference scale for this scene-level proxy, so `anchorValueFraction`
+ *  saturates near 1 for a genuinely well-served, well-developed district
+ *  rather than needing re-tuning whenever `landValueAt`'s own constants move. */
+const VALUE_RICHNESS_REFERENCE_CENTS =
+  Math.max(...Object.values(TERRAIN_BASE_CENTS)) +
+  STATION_UPLIFT_BASE_CENTS +
+  STATION_UPLIFT_DEV_BONUS_CENTS +
+  DISTRICT_DEVELOPMENT_UPLIFT_CENTS;
 
 export interface QuantizedChannels {
   development: number;
@@ -270,10 +304,21 @@ function pickUse(q: QuantizedChannels, roll: number, radiusFrac: number): Buildi
   return 'industrial';
 }
 
-function heightClassFor(density: number, jitter: number): number {
+/** Milestone 5 U6 (R3, KTD10): `valueFactor` (0..1, this parcel's quantized
+ *  land value as a fraction of the scene's own anchor value) adds up to half
+ *  a height class on top of the density-driven base — value and built form
+ *  move together, without letting value alone override what the district's
+ *  own density channel supports (`valueFactor` defaults to 0: byte-identical
+ *  to milestone 4's formula for any caller that doesn't pass it). */
+function heightClassFor(density: number, jitter: number, valueFactor = 0): number {
   const base = density * (HEIGHT_CLASSES - 1);
-  const jittered = base + (jitter - 0.5);
+  const valueBonus = clamp01(valueFactor) * (HEIGHT_CLASSES - 1) * 0.5;
+  const jittered = base + valueBonus + (jitter - 0.5);
   return Math.min(HEIGHT_CLASSES - 1, Math.max(0, Math.round(jittered)));
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 function ageClassFor(ageVarietyScore: number, jitter: number): number {
@@ -282,18 +327,39 @@ function ageClassFor(ageVarietyScore: number, jitter: number): number {
 }
 
 /**
- * Generate a district's street scene (M4 U6, KTD8). Pure: the same
- * (seed, district, anchor) always produces a deep-equal scene; the sim
+ * Generate a district's street scene (M4 U6, KTD8; milestone 5 U6 adds
+ * `state`/value sampling, KTD10). Pure: the same (seed, district, anchor,
+ * state's relevant inputs) always produces a deep-equal scene; the sim
  * stores none of this. `seed` is expected to be `state.rng.seed` (plain
  * data — see module docblock), never `state.rng` itself.
+ *
+ * Milestone 5 U6 (R3, KTD10): `state` is sampled through `landValueAt`
+ * (`sim/model/landValue.ts`) exactly once per scene, at the anchor — the
+ * district's own peak value, quantized to `VALUE_QUANTUM_CENTS` before use
+ * (the same cache-stability discipline `QUANTUM` gives the continuous
+ * channels, applied at a single clean sample point rather than once per
+ * parcel, so "does this scene need to regenerate" stays as simple a
+ * question for value as it already is for `development`). Per-parcel height
+ * then blends that one sampled richness against the parcel's own distance
+ * from the anchor (`radiusFrac`, already computed for `pickUse`'s
+ * commercial-near-the-station bias) — value peaks at the anchor in
+ * `landValueAt` itself (station-uplift, district-development), so re-using
+ * the same positional falloff here is a faithful, far cheaper proxy for
+ * literally re-sampling every parcel's own coordinate. `landValueAt` is a
+ * read-only query (KTD2) — sampling it here, any number of times, never
+ * mutates `state` or grows the save (the same purity guarantee terrain
+ * sampling and district-scene generation have always had).
  */
 export function generateDistrictScene(
   seed: number,
   district: District,
   anchor: { x: number; y: number },
+  state: GameState,
 ): DistrictScene {
   const q = quantizeDistrict(district);
   const idHash = hashString(district.id);
+  const anchorValueCents = quantizeValueCents(landValueAt(state, anchor.x, anchor.y).totalCents);
+  const anchorValueFraction = clamp01(anchorValueCents / VALUE_RICHNESS_REFERENCE_CENTS);
 
   // Derive the four Jacobs-generator inputs from a shape that carries the
   // quantized continuous fields but the record's real (already-discrete)
@@ -361,10 +427,18 @@ export function generateDistrictScene(
     const ageJitter = hash01(seed, idHash, 9, i);
     const vacancyRoll = hash01(seed, idHash, 10, i);
     // R7/R8/R10: a parcel along a cut is the border vacuum — forced vacant,
-    // no tall building classes — regardless of what health-driven vacancy or
-    // density would otherwise have drawn there. Parcels outside every cut's
-    // band are entirely unaffected (KTD10's "local conditioning wins" scope).
+    // no tall building classes — regardless of what health-driven vacancy,
+    // density, or value would otherwise have drawn there (U4's local
+    // conditioning wins over U6's value-form coupling, per KTD10).
     const severed = parcelInVacuum(bx, by, sceneCuts, vacuumRadius);
+
+    // Milestone 5 U6 (R3, KTD10): blend the scene's one sampled richness
+    // (`anchorValueFraction`) against this parcel's own distance from the
+    // anchor — value and built form move together, and (since `landValueAt`
+    // itself peaks at the anchor) a parcel near the station reads richer
+    // than a fringe parcel of the same district.
+    const positionalRichness = 1 - radiusFrac * 0.8;
+    const valueFactor = severed ? 0 : clamp01(anchorValueFraction * positionalRichness);
 
     footprints.push({
       rect: {
@@ -373,7 +447,7 @@ export function generateDistrictScene(
         width: parcelSize,
         height: parcelSize,
       },
-      heightClass: severed ? 0 : heightClassFor(q.density, heightJitter),
+      heightClass: severed ? 0 : heightClassFor(q.density, heightJitter, valueFactor),
       use,
       ageClass: ageClassFor(age, ageJitter),
       vacant: severed ? true : vacancyRoll < (1 - health) * VACANCY_MAX_RATE,

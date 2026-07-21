@@ -180,7 +180,7 @@ export function installDebugHook(store: GameStore, clock: GameClock, seed: numbe
       const s = store.getState();
       const district = s.districts.find((d) => d.id === districtId);
       if (!district) throw new Error(`districtScene: no district with id ${districtId}`);
-      return generateDistrictScene(s.rng.seed, district, { x: district.anchorX, y: district.anchorY });
+      return generateDistrictScene(s.rng.seed, district, { x: district.anchorX, y: district.anchorY }, s);
     },
     setCamera: ({ x, y, scale }) => {
       // Reuse the same methods real wheel/pointer input drives (zoomAt,

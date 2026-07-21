@@ -21,6 +21,7 @@ import {
   TRACK_CUT_STRENGTH,
   type District,
 } from '../../src/sim/model/districts.ts';
+import { createGameState, type GameState } from '../../src/sim/state.ts';
 
 // Local factory, per repo test convention.
 function station(id = 'stn-0', x = 5, y = 5) {
@@ -28,6 +29,16 @@ function station(id = 'stn-0', x = 5, y = 5) {
 }
 
 const ANCHOR = { x: 5, y: 5 };
+
+/** Milestone 5 U6: `generateDistrictScene` now samples `landValueAt`, which
+ *  reads `state.districts`/`state.stations` — so every call site needs a
+ *  state with `d` actually present, matching how every real caller
+ *  (`districtRenderer.ts`, `dev/debugHook.ts`) already has it. */
+function stateWith(d: District): GameState {
+  const s = createGameState(1);
+  s.districts = [d];
+  return s;
+}
 
 describe('street scene generation (M4 U6, KTD8)', () => {
   it('the same (seed, district, anchor) always generates a deep-equal scene', () => {
@@ -38,8 +49,8 @@ describe('street scene generation (M4 U6, KTD8)', () => {
     d.industrial = 0.1;
     d.density = 0.4;
 
-    const a = generateDistrictScene(7, d, ANCHOR);
-    const b = generateDistrictScene(7, d, ANCHOR);
+    const a = generateDistrictScene(7, d, ANCHOR, stateWith(d));
+    const b = generateDistrictScene(7, d, ANCHOR, stateWith(d));
     expect(a).toEqual(b);
   });
 
@@ -49,8 +60,8 @@ describe('street scene generation (M4 U6, KTD8)', () => {
     const dB = makeDistrict('dst-b', station());
     dB.development = 0.5;
 
-    const sceneA = generateDistrictScene(7, dA, ANCHOR);
-    const sceneB = generateDistrictScene(7, dB, ANCHOR);
+    const sceneA = generateDistrictScene(7, dA, ANCHOR, stateWith(dA));
+    const sceneB = generateDistrictScene(7, dB, ANCHOR, stateWith(dB));
     expect(sceneA.footprints).not.toEqual(sceneB.footprints);
   });
 
@@ -58,8 +69,8 @@ describe('street scene generation (M4 U6, KTD8)', () => {
     const d = makeDistrict('dst-0', station());
     d.development = 0.5;
 
-    const sceneA = generateDistrictScene(7, d, ANCHOR);
-    const sceneB = generateDistrictScene(99, d, ANCHOR);
+    const sceneA = generateDistrictScene(7, d, ANCHOR, stateWith(d));
+    const sceneB = generateDistrictScene(99, d, ANCHOR, stateWith(d));
     expect(sceneA.footprints).not.toEqual(sceneB.footprints);
   });
 
@@ -72,7 +83,7 @@ describe('street scene generation (M4 U6, KTD8)', () => {
       // Confirm the nudge really is sub-quantum before asserting on it.
       expect(quantizeDistrict(base).development).toBe(quantizeDistrict(nudged).development);
 
-      expect(generateDistrictScene(7, base, ANCHOR)).toEqual(generateDistrictScene(7, nudged, ANCHOR));
+      expect(generateDistrictScene(7, base, ANCHOR, stateWith(base))).toEqual(generateDistrictScene(7, nudged, ANCHOR, stateWith(nudged)));
     });
 
     it('crossing a quantum boundary changes the scene', () => {
@@ -81,7 +92,7 @@ describe('street scene generation (M4 U6, KTD8)', () => {
       const acrossBoundary: District = { ...base, development: base.development + QUANTUM };
 
       expect(quantizeDistrict(base).development).not.toBe(quantizeDistrict(acrossBoundary).development);
-      expect(generateDistrictScene(7, base, ANCHOR)).not.toEqual(generateDistrictScene(7, acrossBoundary, ANCHOR));
+      expect(generateDistrictScene(7, base, ANCHOR, stateWith(base))).not.toEqual(generateDistrictScene(7, acrossBoundary, ANCHOR, stateWith(acrossBoundary)));
     });
   });
 
@@ -104,8 +115,8 @@ describe('street scene generation (M4 U6, KTD8)', () => {
         development: 0.6,
       };
 
-      const industrialScene = generateDistrictScene(7, industrial, ANCHOR);
-      const residentialScene = generateDistrictScene(7, residential, ANCHOR);
+      const industrialScene = generateDistrictScene(7, industrial, ANCHOR, stateWith(industrial));
+      const residentialScene = generateDistrictScene(7, residential, ANCHOR, stateWith(residential));
 
       const avgHeight = (scene: DistrictScene) =>
         scene.footprints.reduce((sum, f) => sum + f.heightClass, 0) / scene.footprints.length;
@@ -140,7 +151,7 @@ describe('street scene generation (M4 U6, KTD8)', () => {
         firstGrowthDay: 0,
         lastGrowthDay: 2000,
       };
-      const scene = generateDistrictScene(7, maxed, ANCHOR);
+      const scene = generateDistrictScene(7, maxed, ANCHOR, stateWith(maxed));
       expect(scene.footprints.length).toBeLessThanOrEqual(MAX_BUILDINGS);
       for (const f of scene.footprints) {
         expect(Math.hypot(f.rect.x - ANCHOR.x, f.rect.y - ANCHOR.y)).toBeLessThanOrEqual(MAX_EXTENT_TILES + 0.05);
@@ -174,8 +185,8 @@ describe('street scene generation (M4 U6, KTD8)', () => {
       };
       expect(districtHealth(lowHealth)).toBeLessThan(districtHealth(highHealth));
 
-      const lowScene = generateDistrictScene(7, lowHealth, ANCHOR);
-      const highScene = generateDistrictScene(7, highHealth, ANCHOR);
+      const lowScene = generateDistrictScene(7, lowHealth, ANCHOR, stateWith(lowHealth));
+      const highScene = generateDistrictScene(7, highHealth, ANCHOR, stateWith(highHealth));
       const vacancyRate = (scene: DistrictScene) =>
         scene.footprints.filter((f) => f.vacant).length / scene.footprints.length;
 
@@ -188,7 +199,7 @@ describe('street scene generation (M4 U6, KTD8)', () => {
   describe('zero-development hamlet (R9/R11 substrate)', () => {
     it('a zero-development record generates a minimal hamlet — a station square and a building or two — not an empty scene', () => {
       const hamlet = makeDistrict('dst-hamlet', station());
-      const scene = generateDistrictScene(7, hamlet, ANCHOR);
+      const scene = generateDistrictScene(7, hamlet, ANCHOR, stateWith(hamlet));
       expect(scene.footprints.length).toBeGreaterThan(0);
       expect(scene.footprints.length).toBe(MIN_BUILDINGS);
       expect(scene.streets.length).toBeGreaterThan(0);
@@ -246,7 +257,7 @@ describe('severance conditions the scene (milestone 5 U4, R7/R8/R10, KTD10)', ()
       ...developed,
       cuts: [{ ax: ANCHOR.x - 3, ay: ANCHOR.y, bx: ANCHOR.x + 3, by: ANCHOR.y, strength: TRACK_CUT_STRENGTH }],
     };
-    const cutScene = generateDistrictScene(7, cut, ANCHOR);
+    const cutScene = generateDistrictScene(7, cut, ANCHOR, stateWith(cut));
 
     const extent = extentTilesFor(quantizeDistrict(developed).development);
     const sceneCuts = cutsToSceneSpace(cut.cuts, ANCHOR, extent);
@@ -269,7 +280,7 @@ describe('severance conditions the scene (milestone 5 U4, R7/R8/R10, KTD10)', ()
 
   it('a cut recorded far outside the footprint (severancePenalty 0, rescaled far from every parcel) leaves the scene byte-identical to the uncut district', () => {
     const base: District = { ...makeDistrict('dst-far', station()), development: 0.6, residential: 0.4, commercial: 0.3, industrial: 0.3 };
-    const uncutScene = generateDistrictScene(7, base, ANCHOR);
+    const uncutScene = generateDistrictScene(7, base, ANCHOR, stateWith(base));
 
     // Far enough beyond DISTRICT_FOOTPRINT_TILES that severancePenalty's own
     // centrality term clamps to 0 (no health effect) AND cutsToSceneSpace's
@@ -282,7 +293,99 @@ describe('severance conditions the scene (milestone 5 U4, R7/R8/R10, KTD10)', ()
     };
     expect(districtHealth(farCut)).toBe(districtHealth(base)); // severancePenalty clamped to 0
 
-    const cutScene = generateDistrictScene(7, farCut, ANCHOR);
+    const cutScene = generateDistrictScene(7, farCut, ANCHOR, stateWith(farCut));
     expect(cutScene).toEqual(uncutScene);
+  });
+});
+
+describe('value-form coupling (milestone 5 U6, R3, KTD10)', () => {
+  function radiusFracOf(f: DistrictScene['footprints'][number], extent: number): number {
+    const bx = f.rect.x + f.rect.width / 2 - ANCHOR.x;
+    const by = f.rect.y + f.rect.height / 2 - ANCHOR.y;
+    return Math.min(1, Math.hypot(bx, by) / (extent || 1));
+  }
+
+  it('parcels near the station (high value) carry taller height classes than fringe parcels in the same scene', () => {
+    const d: District = {
+      ...makeDistrict('dst-rich', station()),
+      development: 1,
+      residential: 0.5,
+      commercial: 0.5,
+      industrial: 0.3,
+      density: 0.2, // low density-driven base, so any height lift is attributable to value, not q.density
+    };
+    const s = stateWith(d);
+    s.stations.push({ id: d.stationId, x: ANCHOR.x, y: ANCHOR.y, radius: 3 });
+    const scene = generateDistrictScene(7, d, ANCHOR, s);
+    const extent = extentTilesFor(quantizeDistrict(d).development);
+
+    const withFrac = scene.footprints.filter((f) => !f.vacant).map((f) => ({ f, radiusFrac: radiusFracOf(f, extent) }));
+    const near = withFrac.filter((x) => x.radiusFrac < 0.3);
+    const far = withFrac.filter((x) => x.radiusFrac > 0.7);
+    expect(near.length).toBeGreaterThan(0);
+    expect(far.length).toBeGreaterThan(0);
+
+    const avgHeight = (xs: typeof near) => xs.reduce((sum, x) => sum + x.f.heightClass, 0) / xs.length;
+    expect(avgHeight(near)).toBeGreaterThan(avgHeight(far));
+  });
+
+  it('a value change that crosses VALUE_QUANTUM_CENTS regenerates the scene; a sub-quantum change does not', () => {
+    // `d` itself never changes across the three states below — only a
+    // throwaway second district's cut (far from `d`'s own anchor, so it
+    // never enters `d`'s own severance/vacuum-band story) perturbs the
+    // *sampled value* at the scene's anchor. Any scene difference is then
+    // attributable solely to value quantization, never to quantizeDistrict's
+    // own (unrelated) channel quantization.
+    const d: District = { ...makeDistrict('dst-q', station()), development: 0.5 };
+
+    const perturb = (strength: number): District => ({
+      ...makeDistrict('dst-perturb', { id: 'other-stn', x: 9999, y: 9999 }),
+      cuts: [{ ax: ANCHOR.x, ay: ANCHOR.y, bx: ANCHOR.x, by: ANCHOR.y, strength }],
+    });
+
+    const baseScene = generateDistrictScene(7, d, ANCHOR, stateWith(d));
+
+    const subQuantumState = stateWith(d);
+    subQuantumState.districts.push(perturb(0.05)); // |Δcents| = 2000 < half the 5000 quantum window
+    const subQuantumScene = generateDistrictScene(7, d, ANCHOR, subQuantumState);
+    expect(subQuantumScene).toEqual(baseScene);
+
+    const crossingState = stateWith(d);
+    crossingState.districts.push(perturb(0.1)); // |Δcents| = 4000 > half the quantum window
+    const crossingScene = generateDistrictScene(7, d, ANCHOR, crossingState);
+    expect(crossingScene).not.toEqual(baseScene);
+  });
+
+  it('composes with severance: a high-value corridor crossed by a cut still renders the vacuum band (U4 local conditioning wins, KTD10)', () => {
+    const d: District = {
+      ...makeDistrict('dst-corridor', station()),
+      development: 1,
+      residential: 0.5,
+      commercial: 0.5,
+      industrial: 0.3,
+      density: 0.2,
+      // A real approach line through the anchor (see the U4 severance test
+      // above for why a degenerate point chord wouldn't reach the block
+      // ring where buildings actually cluster).
+      cuts: [{ ax: ANCHOR.x - 3, ay: ANCHOR.y, bx: ANCHOR.x + 3, by: ANCHOR.y, strength: TRACK_CUT_STRENGTH }],
+    };
+    const s = stateWith(d);
+    s.stations.push({ id: d.stationId, x: ANCHOR.x, y: ANCHOR.y, radius: 3 }); // high value everywhere nearby
+    const scene = generateDistrictScene(7, d, ANCHOR, s);
+    const extent = extentTilesFor(quantizeDistrict(d).development);
+    const sceneCuts = cutsToSceneSpace(d.cuts, ANCHOR, extent);
+    const radius = extent * SEVERANCE_SCENE_RADIUS_FRAC;
+
+    let severedCount = 0;
+    for (const f of scene.footprints) {
+      const bx = f.rect.x + f.rect.width / 2 - ANCHOR.x;
+      const by = f.rect.y + f.rect.height / 2 - ANCHOR.y;
+      if (parcelInVacuum(bx, by, sceneCuts, radius)) {
+        severedCount++;
+        expect(f.vacant).toBe(true);
+        expect(f.heightClass).toBe(0); // not lifted by the high-value corridor around it
+      }
+    }
+    expect(severedCount).toBeGreaterThan(0);
   });
 });

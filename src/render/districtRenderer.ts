@@ -82,6 +82,16 @@ export function districtsInView(
  * exact quantized tuple `generateDistrictScene` derives its scene from — so
  * this key changes exactly when the scene it would regenerate does, no more
  * and no less.
+ *
+ * Known milestone-5 limitation: this key does not include a term for
+ * `landValueAt` (U6) or `district.cuts` (U4/U5) — both can change without
+ * any of `quantizeDistrict`'s own fields changing (e.g. a neighboring
+ * station's catchment newly overlapping this district's parcels shifts
+ * sampled land value with zero channel movement here). A resident texture
+ * can therefore go stale until the next channel-driven regeneration. This
+ * is a rendering-only staleness gap — GameState/the save are unaffected,
+ * and the repo's no-rendering-tests policy leaves this class of key
+ * uncovered — noted here rather than silently accepted.
  */
 export function districtSceneCacheKey(district: District, tier: ZoomTierId): string {
   const q = quantizeDistrict(district);
@@ -148,7 +158,7 @@ export class DistrictRenderer {
       visibleKeys.add(key);
       let scene = this.resident.get(key);
       if (!scene) {
-        scene = this.generate(district, state.rng.seed);
+        scene = this.generate(district, state);
         this.resident.set(key, scene);
         this.container.addChild(scene.sprite);
       }
@@ -168,9 +178,9 @@ export class DistrictRenderer {
     }
   }
 
-  private generate(district: District, seed: number): ResidentScene {
+  private generate(district: District, state: GameState): ResidentScene {
     const anchor = { x: district.anchorX, y: district.anchorY };
-    const scene = generateDistrictScene(seed, district, anchor);
+    const scene = generateDistrictScene(state.rng.seed, district, anchor, state);
     const extentTiles = Math.max(extentTilesFor(quantizeDistrict(district).development), 0.05);
 
     const g = new Graphics();

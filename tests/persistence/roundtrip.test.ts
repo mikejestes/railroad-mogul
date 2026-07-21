@@ -175,7 +175,7 @@ describe('district persistence (M4 U2/U8, R3, R14, AE4)', () => {
     // Generate street scenes for every district between generating and
     // saving "after" — scene generation must touch no state (R9, R11).
     for (const district of after.districts) {
-      generateDistrictScene(after.rng.seed, district, { x: district.anchorX, y: district.anchorY });
+      generateDistrictScene(after.rng.seed, district, { x: district.anchorX, y: district.anchorY }, after);
     }
     const afterSave = serializeSave(after);
 
