@@ -6,13 +6,28 @@ import { makeTrain } from '../../src/sim/model/trains.ts';
 import { availableEngines, ENGINES } from '../../src/sim/model/trains.ts';
 import { findPath } from '../../src/sim/pathfinding.ts';
 
-/** A small all-land world with a straight track A(0,0)..B(len,0). */
+// U3: terrain is no longer a stored array a fixture can fill with a uniform
+// placeholder — it comes from `terrainAt(x, y)` (real, authored geography),
+// which is not uniform. These tests care about movement/pathfinding
+// mechanics, not geography, so they anchor at coordinate ranges verified
+// (empirically, against the actual reference field/seed) never to be `sea`
+// (movement just needs a buildable, finite-cost line — cost need not be
+// uniform, since e.g. "a heavier consist travels slower" only ever compares
+// two trains on the *same* track). `LINE_OX`/`LINE_OY` starts a row that
+// stays non-sea for at least 22 tiles east.
+const LINE_OX = 17;
+const LINE_OY = 0;
+
+/** A small buildable-land world with a straight track A(0,0)..B(len,0),
+ *  anchored so every tile along the line is real, non-sea terrain. */
 function lineWorld(len: number): GameState {
   const s = createGameState(1);
-  s.world = { width: len + 2, height: 3, terrain: new Array((len + 2) * 3).fill('land') };
-  s.stations.push({ id: 'A', x: 0, y: 0, radius: 1 });
-  s.stations.push({ id: 'B', x: len, y: 0, radius: 1 });
-  for (let x = 0; x < len; x++) s.track.segments.push({ ax: x, ay: 0, bx: x + 1, by: 0 });
+  s.world = { width: LINE_OX + len + 2, height: LINE_OY + 1 };
+  s.stations.push({ id: 'A', x: LINE_OX, y: LINE_OY, radius: 1 });
+  s.stations.push({ id: 'B', x: LINE_OX + len, y: LINE_OY, radius: 1 });
+  for (let x = 0; x < len; x++) {
+    s.track.segments.push({ ax: LINE_OX + x, ay: LINE_OY, bx: LINE_OX + x + 1, by: LINE_OY });
+  }
   return s;
 }
 
@@ -34,7 +49,7 @@ describe('train movement', () => {
     let guard = 0;
     while (train.atStationId !== 'B' && guard++ < 100) tick(s, 1, [movementSystem]);
     expect(train.atStationId).toBe('B');
-    expect(train.x).toBe(5);
+    expect(train.x).toBe(LINE_OX + 5);
   });
 
   it('a heavier consist travels slower', () => {
@@ -59,15 +74,21 @@ describe('train movement', () => {
 
   it('takes the shorter weighted route when two paths connect the stops', () => {
     const s = createGameState(1);
-    s.world = { width: 4, height: 3, terrain: new Array(12).fill('land') };
-    // Direct: (0,0)-(1,0)-(2,0). Detour: (0,0)-(0,1)-(1,1)-(2,1)-(2,0).
-    s.track.segments.push({ ax: 0, ay: 0, bx: 1, by: 0 });
-    s.track.segments.push({ ax: 1, ay: 0, bx: 2, by: 0 });
-    s.track.segments.push({ ax: 0, ay: 0, bx: 0, by: 1 });
-    s.track.segments.push({ ax: 0, ay: 1, bx: 1, by: 1 });
-    s.track.segments.push({ ax: 1, ay: 1, bx: 2, by: 1 });
-    s.track.segments.push({ ax: 2, ay: 1, bx: 2, by: 0 });
-    const path = findPath(s, 0, 0, 2, 0);
+    // A separate anchor from LINE_OX/LINE_OY: this test compares path *cost*
+    // between a direct and a detour route, so — unlike lineWorld above — it
+    // needs every tile on both candidate paths at uniform move cost (verified
+    // empirically), or an unlucky expensive tile on the detour could make it
+    // spuriously cheaper or more expensive than intended.
+    const [x0, y0, y1] = [36, 0, 1];
+    s.world = { width: x0 + 4, height: y1 + 2 };
+    // Direct: (x0,y0)-(x0+1,y0)-(x0+2,y0). Detour via y1.
+    s.track.segments.push({ ax: x0, ay: y0, bx: x0 + 1, by: y0 });
+    s.track.segments.push({ ax: x0 + 1, ay: y0, bx: x0 + 2, by: y0 });
+    s.track.segments.push({ ax: x0, ay: y0, bx: x0, by: y1 });
+    s.track.segments.push({ ax: x0, ay: y1, bx: x0 + 1, by: y1 });
+    s.track.segments.push({ ax: x0 + 1, ay: y1, bx: x0 + 2, by: y1 });
+    s.track.segments.push({ ax: x0 + 2, ay: y1, bx: x0 + 2, by: y0 });
+    const path = findPath(s, x0, y0, x0 + 2, y0);
     expect(path).not.toBeNull();
     expect(path!.length).toBe(3); // the direct 2-hop route
   });

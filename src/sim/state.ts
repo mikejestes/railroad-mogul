@@ -1,9 +1,9 @@
 import { createRng, type RngState } from './rng.ts';
-import type { Terrain } from '../world/geography.ts';
 import type { City } from './model/cities.ts';
 import type { Industry } from './model/industries.ts';
 import type { Station, TrackNetwork } from './model/track.ts';
 import type { Train } from './model/trains.ts';
+import type { RiverGraph } from '../world/rivers.ts';
 
 /**
  * The whole simulation world as plain, serializable data (KTD2). No class
@@ -13,12 +13,26 @@ import type { Train } from './model/trains.ts';
  * Later units extend this: U3 adds the tile grid and cities, U4 goods/industry
  * stockpiles and demand, U5 track, U6 trains. They append fields; they do not
  * change the money-is-integer or canonical-serialization contracts.
+ *
+ * U3/R9 change: `World` no longer stores a `terrain` array. Terrain is a pure
+ * function of coordinates (`terrainAt` in `world/geography.ts`) evaluable at
+ * any resolution without being generated or stored first — the whole point of
+ * the milestone (KTD1). `World` now carries only grid dimensions, which bound
+ * `x`/`y` for placement and pathfinding; nothing about terrain content lives
+ * here, so the save no longer grows with map size or how much of it has been
+ * viewed.
+ *
+ * Milestone 2 U5 addition: `rivers` carries the coarse river flow graph
+ * (`world/rivers.ts`). It is the one deliberate, bounded exception to
+ * "terrain is never stored" (KTD6, R7) — flow accumulation needs neighbor
+ * knowledge and cannot be evaluated per coordinate the way elevation/
+ * moisture/temperature can. `createGameState` seeds it with an empty graph;
+ * `generateGame` (`world/generate.ts`) fills it in once world dimensions are
+ * known, the same pattern `world` itself already follows.
  */
-/** The tile grid. `terrain` is row-major, length width*height (U3). */
 export interface World {
   width: number;
   height: number;
-  terrain: Terrain[];
 }
 
 export interface GameState {
@@ -32,6 +46,9 @@ export interface GameState {
   rng: RngState;
   /** The tile grid (empty until U3 generation fills it). */
   world: World;
+  /** Coarse river flow graph, computed once at generation and stored — the
+   *  one deliberate exception to "terrain is never stored" (U5, KTD6). */
+  rivers: RiverGraph;
   /** Cities: demand sinks that grow when fed (U3, U8). */
   cities: City[];
   /** Industry sites: producers and processors (U3, U4). */
@@ -55,7 +72,19 @@ export interface GameState {
 
 export const START_YEAR = 1830;
 
-export const SCHEMA_VERSION = 1;
+/**
+ * Save-format version (KTD9, terrain-substrate milestone U7). Bumped 1 -> 2
+ * because `World.terrain` — a stored array serialized under schema 1 — was
+ * removed in U3 in favor of pure field evaluation; a v1 envelope's `state`
+ * JSON carries a shape `deserializeSave` can no longer interpret correctly.
+ * There is no save UI, no autosave, and no load path in the running app
+ * today (persistence is exercised only by tests), so writing a migrator for
+ * saves that cannot exist would be speculative work — `migrate` in
+ * `persistence/saveStore.ts` refuses a version mismatch outright rather than
+ * attempting to upgrade it. Bump this again, and add a real migration step,
+ * the next time a stored-state shape changes after a save path ships.
+ */
+export const SCHEMA_VERSION = 2;
 
 export function createGameState(seed: number): GameState {
   return {
@@ -63,7 +92,8 @@ export function createGameState(seed: number): GameState {
     timeDays: 0,
     moneyCents: 0,
     rng: createRng(seed),
-    world: { width: 0, height: 0, terrain: [] },
+    world: { width: 0, height: 0 },
+    rivers: { rivers: [] },
     cities: [],
     industries: [],
     track: { segments: [] },
@@ -78,11 +108,6 @@ export function createGameState(seed: number): GameState {
 
 /** Starting capital for a new game, in integer cents (~$1,000,000). */
 export const STARTING_CAPITAL = 1_000_000_00;
-
-/** Row-major tile index helper. */
-export function tileIndex(world: World, x: number, y: number): number {
-  return y * world.width + x;
-}
 
 /** Adjust player cash. Callers pass integer cents; guarded to stay integer. */
 export function addMoney(state: GameState, deltaCents: number): void {

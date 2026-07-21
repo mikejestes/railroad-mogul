@@ -43,6 +43,18 @@ export function deserializeSave(json: string): GameState {
 /**
  * Migration hook. v1 is the only shipped version; future format bumps add a
  * case here that upgrades an older state in place before it is used.
+ *
+ * v1 -> v2 (KTD9, terrain-substrate milestone U7): schema 2 removed
+ * `World.terrain` (U3) — the array a v1 save's `state` JSON still carries —
+ * in favor of terrain as a pure function of coordinates. There is nothing to
+ * migrate a v1 `terrain` array *into*; the field simply no longer exists on
+ * `World`, and the fields.ts noise fields a v2 world derives terrain from
+ * have no v1 counterpart to translate from. A migrator would have to
+ * fabricate field values that could never match what a real seed produces,
+ * silently corrupting the world underneath the player. `migrate` therefore
+ * refuses a v1 load outright per KTD9 rather than attempting a lossy
+ * upgrade — safe today because no save UI, autosave, or load path exists in
+ * the running app, so no v1 save can exist in the wild to strand.
  */
 function migrate(state: GameState, fromVersion: number): GameState {
   if (fromVersion === SCHEMA_VERSION) return state;

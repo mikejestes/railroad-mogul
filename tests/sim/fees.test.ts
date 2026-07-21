@@ -53,18 +53,34 @@ describe('demand-coupled fee model (KTD4)', () => {
 });
 
 describe('delivery integration', () => {
+  // U3: terrain is no longer a stored array a fixture can fill with a uniform
+  // placeholder — it comes from `terrainAt(x, y)` (real, authored geography).
+  // Anchor at a coordinate range verified never to be sea for at least 22
+  // tiles east (see tests/sim/movement.test.ts's LINE_OX/LINE_OY) rather than
+  // the tile origin (open Atlantic).
+  const OX = 17;
+  const OY = 0;
+
   /** Two stations on a straight line with a producing coal mine at the origin. */
   function deliveryWorld(): GameState {
     const s = createGameState(1);
-    s.world = { width: 6, height: 3, terrain: new Array(18).fill('land') };
-    s.stations.push({ id: 'A', x: 0, y: 0, radius: 1 });
-    s.stations.push({ id: 'B', x: 4, y: 0, radius: 1 });
-    for (let x = 0; x < 4; x++) s.track.segments.push({ ax: x, ay: 0, bx: x + 1, by: 0 });
+    s.world = { width: OX + 6, height: OY + 3 };
+    s.stations.push({ id: 'A', x: OX, y: OY, radius: 1 });
+    s.stations.push({ id: 'B', x: OX + 4, y: OY, radius: 1 });
+    for (let x = 0; x < 4; x++) s.track.segments.push({ ax: OX + x, ay: OY, bx: OX + x + 1, by: OY });
     // City at B that demands food; a food source at A.
-    const city = makeCity('metropolis', 'Metropolis', 4, 0, 0);
+    const city = makeCity('metropolis', 'Metropolis', OX + 4, OY, 0);
     city.backlog = { food: 30 };
     s.cities.push(city);
-    s.industries.push({ id: 'food-a', type: 'foodPlant', x: 0, y: 0, output: 'food', outputStock: 8, inputStock: {} });
+    s.industries.push({
+      id: 'food-a',
+      type: 'foodPlant',
+      x: OX,
+      y: OY,
+      output: 'food',
+      outputStock: 8,
+      inputStock: {},
+    });
     return s;
   }
 

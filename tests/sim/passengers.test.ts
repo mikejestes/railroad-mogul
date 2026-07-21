@@ -17,16 +17,24 @@ describe('passengers & mail', () => {
     expect(city.supply.passengers!).toBeLessThanOrEqual(CITY_SUPPLY_CAP);
   });
 
+  // U3: terrain is no longer a stored array a fixture can fill with a
+  // uniform placeholder — it comes from `terrainAt(x, y)` (real, authored
+  // geography). Anchor at a coordinate range verified never to be sea (see
+  // tests/sim/movement.test.ts's LINE_OX/LINE_OY) rather than the tile
+  // origin (open Atlantic).
+  const OX = 17;
+  const OY = 0;
+
   /** Two cities on a connected line, a train looping between them. */
   function twoCityLine(): GameState {
     const s = createGameState(1);
     s.moneyCents = STARTING_CAPITAL;
-    s.world = { width: 6, height: 1, terrain: new Array(6).fill('land') };
-    s.stations.push({ id: 'A', x: 0, y: 0, radius: 1 });
-    s.stations.push({ id: 'B', x: 4, y: 0, radius: 1 });
-    for (let x = 0; x < 4; x++) s.track.segments.push({ ax: x, ay: 0, bx: x + 1, by: 0 });
-    s.cities.push(makeCity('cityA', 'Aville', 0, 0, 1));
-    s.cities.push(makeCity('cityB', 'Bville', 4, 0, 1));
+    s.world = { width: OX + 6, height: OY + 1 };
+    s.stations.push({ id: 'A', x: OX, y: OY, radius: 1 });
+    s.stations.push({ id: 'B', x: OX + 4, y: OY, radius: 1 });
+    for (let x = 0; x < 4; x++) s.track.segments.push({ ax: OX + x, ay: OY, bx: OX + x + 1, by: OY });
+    s.cities.push(makeCity('cityA', 'Aville', OX, OY, 1));
+    s.cities.push(makeCity('cityB', 'Bville', OX + 4, OY, 1));
     s.trains.push(
       makeTrain('t', 'american', [
         { stationId: 'A', loads: ['passengers', 'mail'], unload: true },

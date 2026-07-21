@@ -31,6 +31,11 @@ export function buyTrain(state: GameState, engineId: string, stationIds: string[
  *
  * Station ids come from a serialized `state.nextStationId` counter, so they stay
  * unique and deterministic across save/load and replay (no module-level state).
+ *
+ * The switch has an exhaustiveness check (U3): later milestones add several
+ * more intent kinds, and a switch with no `default` silently no-ops on an
+ * unhandled one — a failure mode indistinguishable from "nothing happened",
+ * which is worse than a thrown error during development.
  */
 export function applyIntent(state: GameState, intent: Intent): void {
   switch (intent.kind) {
@@ -43,5 +48,9 @@ export function applyIntent(state: GameState, intent: Intent): void {
     case 'buyTrain':
       buyTrain(state, intent.engineId, intent.stationIds);
       break;
+    default: {
+      const unhandled: never = intent;
+      throw new Error(`applyIntent: unhandled intent kind: ${(unhandled as Intent).kind}`);
+    }
   }
 }
