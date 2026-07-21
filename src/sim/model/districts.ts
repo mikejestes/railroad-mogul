@@ -133,6 +133,25 @@ function chordCrossesFootprint(district: District, chord: Pick<Cut, 'ax' | 'ay' 
   return withinFootprint(district, chord.ax, chord.ay) || withinFootprint(district, chord.bx, chord.by);
 }
 
+/**
+ * Shortest Euclidean distance from point `(px, py)` to a chord's segment
+ * (the standard clamped-projection formula; degenerates cleanly to
+ * point-to-point distance for a zero-length station-footprint chord).
+ * Exported and shared by `sim/model/landValue.ts` (U5, per-tile severance
+ * depression) and `world/streets.ts` (U4, per-parcel vacuum-band
+ * membership) so the two "how far is this point from this cut" derivations
+ * — one in world coordinates, one in rescaled scene coordinates, but the
+ * same geometry either way — can never drift apart.
+ */
+export function distanceToChord(px: number, py: number, chord: Pick<Cut, 'ax' | 'ay' | 'bx' | 'by'>): number {
+  const dx = chord.bx - chord.ax;
+  const dy = chord.by - chord.ay;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) return Math.hypot(px - chord.ax, py - chord.ay);
+  const t = Math.max(0, Math.min(1, ((px - chord.ax) * dx + (py - chord.ay) * dy) / lengthSq));
+  return Math.hypot(px - (chord.ax + t * dx), py - (chord.ay + t * dy));
+}
+
 /** Squared distance between two cuts' midpoints — cheap, monotonic with the
  *  real distance, and all `mergeNearestCuts` needs to rank pairs. */
 function cutMidpointDistanceSq(a: Cut, b: Cut): number {

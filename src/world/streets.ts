@@ -1,5 +1,11 @@
 import type { District, Cut } from '../sim/model/districts.ts';
-import { districtHealth, blockGranularity, ageVariety, DISTRICT_FOOTPRINT_TILES } from '../sim/model/districts.ts';
+import {
+  districtHealth,
+  blockGranularity,
+  ageVariety,
+  DISTRICT_FOOTPRINT_TILES,
+  distanceToChord,
+} from '../sim/model/districts.ts';
 
 /**
  * Street-scene generation (M4 U6, KTD8, R2/R9/R11/R12). `generateDistrictScene`
@@ -210,18 +216,6 @@ export function cutsToSceneSpace(cuts: readonly Cut[], anchor: { x: number; y: n
   }));
 }
 
-/** Shortest distance from point `(px, py)` to the segment `(ax,ay)-(bx,by)`
- *  — the standard clamped-projection formula. Degenerates cleanly to
- *  point-to-point distance for a zero-length (station-footprint) chord. */
-function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const lengthSq = dx * dx + dy * dy;
-  if (lengthSq === 0) return Math.hypot(px - ax, py - ay);
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSq));
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-}
-
 /** Vacuum-band half-width, as a fraction of the district's rendered
  *  `extent` (R8/R10) — a parcel within this distance of any cut, in
  *  scene-relative space, reads as the border vacuum: forced vacant, no tall
@@ -235,7 +229,7 @@ export const SEVERANCE_SCENE_RADIUS_FRAC = 0.12;
  *  no-rendering-tests policy (KTD7); `generateDistrictScene` just applies
  *  its answer to `vacant`/`heightClass`. */
 export function parcelInVacuum(bx: number, by: number, sceneCuts: readonly SceneCut[], radius: number): boolean {
-  return sceneCuts.some((c) => distanceToSegment(bx, by, c.ax, c.ay, c.bx, c.by) <= radius);
+  return sceneCuts.some((c) => distanceToChord(bx, by, c) <= radius);
 }
 
 function lerp(a: number, b: number, t: number): number {
