@@ -1,7 +1,7 @@
 import { createRng, type RngState } from './rng.ts';
 import type { City } from './model/cities.ts';
 import type { Industry } from './model/industries.ts';
-import type { Station, TrackNetwork, Route } from './model/track.ts';
+import type { Station, TrackNetwork, Route, DerelictSite } from './model/track.ts';
 import type { Train } from './model/trains.ts';
 import type { District } from './model/districts.ts';
 import type { RiverGraph } from '../world/rivers.ts';
@@ -80,6 +80,13 @@ export interface GameState {
   nextDistrictId: number;
   /** Calendar year the game began (U6 era progression). */
   startYear: number;
+  /** Abandoned station sites (milestone 5 U7, KTD8/KTD9): every tile a
+   *  station moved away from, in move order. APPEND-ONLY — no code path in
+   *  this codebase removes an entry, the same permanence discipline
+   *  `District.cuts` follows (U3). A fixed, constant depression forever
+   *  (KTD9) — moving a station leaves a scar that does not heal and does
+   *  not deepen. */
+  derelictSites: DerelictSite[];
   /** Save-format version, for migrations (U11). */
   schemaVersion: number;
 }
@@ -106,8 +113,18 @@ export const START_YEAR = 1830;
  * version mismatch outright rather than fabricating fields an older save never
  * had. Bump this again, and add a real migration step, the next time a
  * stored-state shape changes after a save path ships.
+ *
+ * Bumped 4 -> 5 (station siting/severance milestone U7, KTD11): `Station`
+ * gains an optional `stationType`, `District` gains `cuts`, and
+ * `state.derelictSites` is a new required field — none of which a
+ * schema-4 save's `state` JSON carries. Same precedent again: `cuts` and
+ * `derelictSites` are permanent, path-dependent history (which infrastructure
+ * severed what, and when a station was abandoned) that was never recorded
+ * before this milestone, so there is nothing to synthesize it from; `migrate`
+ * refuses the version mismatch outright rather than fabricating a severance
+ * history that never happened.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export function createGameState(seed: number): GameState {
   return {
@@ -129,6 +146,7 @@ export function createGameState(seed: number): GameState {
     nextRouteId: 0,
     nextDistrictId: 0,
     startYear: START_YEAR,
+    derelictSites: [],
     schemaVersion: SCHEMA_VERSION,
   };
 }

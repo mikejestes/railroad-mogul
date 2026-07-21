@@ -5,7 +5,7 @@ import { addMoney } from '../state.ts';
 import { citiesInCatchment, industriesInCatchment, stationTypeOf, type Station } from '../model/track.ts';
 import { departTrain } from './movement.ts';
 import { engineById, totalCargo, type Train } from '../model/trains.ts';
-import { accrueDelivery } from '../model/districts.ts';
+import { accrueDelivery, activeDistrictFor } from '../model/districts.ts';
 
 /**
  * Delivery & the demand-coupled fee model (U7, KTD4) — the mechanic everything
@@ -90,7 +90,12 @@ export const deliverySystem: System = (state) => {
 
 function unloadCargo(state: GameState, train: Train, station: Station, day: number): void {
   const cities = citiesInCatchment(state, station);
-  const district = state.districts.find((d) => d.stationId === station.id);
+  // Milestone 5 U7 (KTD8): the *active* district for this station, not
+  // merely the first one sharing its id — after a beyond-footprint
+  // relocation, an abandoned district can share a stationId with the
+  // station's new (active) one, and only the active one should keep
+  // accruing deliveries.
+  const district = activeDistrictFor(state, station.id);
   const remaining: typeof train.cars = [];
 
   for (const car of train.cars) {

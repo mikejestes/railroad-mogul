@@ -562,6 +562,26 @@ export function districtTrafficWeight(station: Station, good: TrafficGood): numb
 }
 
 /**
+ * The district currently "matched to" a station id (milestone 5 U7, KTD8):
+ * `state.districts` can hold more than one record with the same
+ * `stationId` after a beyond-footprint relocation (`ensureDistrict`'s
+ * narrowed per-(station id, anchor) idempotency, `store/applyIntents.ts`) —
+ * the abandoned district keeps the id for historical attribution, but only
+ * the *most recently created* one for that id is the record a station's
+ * current activity (deliveries, catchment-based traffic) should credit.
+ * Since `state.districts` only ever appends (never reorders or removes,
+ * R14), "most recent" is simply the last match in array order — no Map/Set
+ * needed, no iteration-order ambiguity.
+ */
+export function activeDistrictFor(state: GameState, stationId: string): District | undefined {
+  let found: District | undefined;
+  for (const district of state.districts) {
+    if (district.stationId === stationId) found = district;
+  }
+  return found;
+}
+
+/**
  * Passenger/mail traffic multiplier for `city` (KTD5). Sums each qualifying
  * district's *health deviation* from `HEALTH_NEUTRAL` — not full per-district
  * multipliers — over every district whose station catchment covers the city,
@@ -574,16 +594,27 @@ export function districtTrafficWeight(station: Station, good: TrafficGood): numb
  * - 1` — a term independent of health, so type-driven traffic differences
  * survive even between two districts of equal health (AE2). Omitting `good`
  * (every pre-M5 call site) is byte-identical to milestone 4's formula.
+ *
+ * Milestone 5 U7 (KTD8): only considers each station's *active* district
+ * (`activeDistrictFor`) — after a relocation beyond the old district's
+ * footprint, an abandoned district sharing the same `stationId` would
+ * otherwise be checked against the same (single, current) station position
+ * a second time, double-crediting one station's catchment as if two
+ * stations served it.
  */
 export function districtTrafficMultiplier(state: GameState, city: City, good?: TrafficGood): number {
   let deviationSum = 0;
   let typeSkew = 0;
+  const seenStationIds = new Set<string>();
   for (const district of state.districts) {
-    if (district.development < DEVELOPMENT_FLOOR) continue;
-    const station = state.stations.find((s) => s.id === district.stationId);
+    if (seenStationIds.has(district.stationId)) continue; // only the active record per station counts
+    seenStationIds.add(district.stationId);
+    const active = activeDistrictFor(state, district.stationId)!;
+    if (active.development < DEVELOPMENT_FLOOR) continue;
+    const station = state.stations.find((s) => s.id === active.stationId);
     if (!station) continue;
     if (!inCatchment(station, city.x, city.y)) continue;
-    deviationSum += districtHealth(district) - HEALTH_NEUTRAL;
+    deviationSum += districtHealth(active) - HEALTH_NEUTRAL;
     if (good) typeSkew += districtTrafficWeight(station, good) - 1;
   }
   const multiplier = 1 + TRAFFIC_MULTIPLIER_K * deviationSum + typeSkew;

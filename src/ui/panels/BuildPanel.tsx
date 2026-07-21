@@ -1,6 +1,6 @@
 import type { StationType } from '../../sim/model/track.ts';
 
-export type BuildMode = 'none' | 'survey' | 'station' | 'train';
+export type BuildMode = 'none' | 'survey' | 'station' | 'train' | 'move';
 
 /** The three station types a picker offers, in the order they're shown
  *  (milestone 5 U1, R4). `'mixed'` is listed first — it's the default the
@@ -24,6 +24,12 @@ export const STATION_TYPE_OPTIONS: { value: StationType; label: string }[] = [
  * appears alongside the mode buttons so the type is chosen before the
  * player clicks the map — `main.ts` reads `stationType` at click time and
  * threads it into the `buildStation` intent.
+ *
+ * Milestone 5 U7 (R11, KTD8): 'move' is a minimal relocation affordance —
+ * no new panel, per the plan's own Assumptions. The two-click flow (select
+ * a station, then click its new site) is boot-scope interaction state that
+ * lives in `main.ts`, the same way survey mode's pending waypoints do; this
+ * panel only arms the mode and shows a static instruction while it's active.
  */
 export function BuildPanel({
   mode,
@@ -56,7 +62,13 @@ export function BuildPanel({
     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
       {button('survey', 'Survey Route')}
       {button('station', 'Build Station')}
+      {button('move', 'Move Station')}
       {button('train', 'Buy Train')}
+      {mode === 'move' && (
+        <span style={{ color: '#e0e1dd', fontSize: 12, opacity: 0.85 }}>
+          Click a station, then click its new site (full price, no refund).
+        </span>
+      )}
       {mode === 'station' && (
         <select
           value={stationType}

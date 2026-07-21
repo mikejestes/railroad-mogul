@@ -1,7 +1,7 @@
 import type { GameState } from '../state.ts';
 import { terrainAt, type Terrain } from '../../world/geography.ts';
 import { inCatchment, type Station } from './track.ts';
-import { DISTRICT_FOOTPRINT_TILES, distanceToChord } from './districts.ts';
+import { DISTRICT_FOOTPRINT_TILES, distanceToChord, activeDistrictFor } from './districts.ts';
 
 /**
  * Land value (milestone 5 U5, R1/R2, KTD2). `landValueAt(state, wx, wy)` is
@@ -22,11 +22,10 @@ import { DISTRICT_FOOTPRINT_TILES, distanceToChord } from './districts.ts';
  * milestone 6's R9 ("the player can tell what caused a parcel's value to
  * move") starts from.
  *
- * Milestone 5 U7 note: the Approach also names a `derelict` item —
- * `state.derelictSites` does not exist until U7 adds it (this plan's own
- * sequencing: U5 lands before U7). This file is written so U7 only has to
- * add one more contribution function and one more item push; nothing here
- * needs restructuring when that field arrives.
+ * Milestone 5 U7 adds the `derelict` item (KTD9) once `state.derelictSites`
+ * exists — a constant, bottomed depression per abandoned site, never
+ * deepening over time. U5 anticipated this: no restructuring was needed,
+ * only one more contribution function and one more item push.
  */
 
 /** Item names `landValueAt` can emit. `'floor-adjustment'` only appears when
@@ -103,6 +102,17 @@ export const SEVERANCE_DEPRESSION_PEAK_CENTS = 400_00;
  *  itself sums over. */
 export const SEVERANCE_DEPRESSION_RADIUS_TILES = 2;
 
+/** Peak derelict-site depression, at the abandoned tile itself (milestone 5
+ *  U7, KTD9). Constant and bottomed — a derelict site depresses value by
+ *  exactly this much, forever; it never deepens over time (`day` on
+ *  `DerelictSite` is history/attribution only, never a decay input). */
+export const DERELICT_DEPRESSION_PEAK_CENTS = 600_00;
+
+/** Distance (world tiles) at which a derelict site's depression falls off
+ *  to zero — a tight, local scar (KTD9), the same order of magnitude as
+ *  `SEVERANCE_DEPRESSION_RADIUS_TILES`. */
+export const DERELICT_DEPRESSION_RADIUS_TILES = 1.5;
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
@@ -132,7 +142,9 @@ function stationUpliftItem(state: GameState, wx: number, wy: number): LandValueI
   for (const station of state.stations) {
     const falloff = stationFalloff(station, wx, wy);
     if (falloff <= 0) continue;
-    const district = state.districts.find((d) => d.stationId === station.id);
+    // Milestone 5 U7 (KTD8): the station's *active* district, not merely
+    // the first one sharing its id — see `activeDistrictFor`'s own docblock.
+    const district = activeDistrictFor(state, station.id);
     const development = district ? clamp01(district.development) : 0;
     cents += falloff * (STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS * development);
   }
@@ -174,6 +186,22 @@ function severanceItem(state: GameState, wx: number, wy: number): LandValueItem 
   return { name: 'severance', cents: rounded === 0 ? 0 : -rounded }; // avoid emitting -0
 }
 
+/** Derelict item (milestone 5 U7, R13, KTD9): negative, distance-falloff
+ *  depression from every abandoned station site near `(wx, wy)`. Constant
+ *  per site (no `day`-based deepening) and bottomed the same way severance
+ *  is — a scar, not a spreading disease. */
+function derelictItem(state: GameState, wx: number, wy: number): LandValueItem {
+  let cents = 0;
+  for (const site of state.derelictSites) {
+    const dist = Math.hypot(wx - site.x, wy - site.y);
+    if (dist > DERELICT_DEPRESSION_RADIUS_TILES) continue;
+    const falloff = 1 - dist / DERELICT_DEPRESSION_RADIUS_TILES;
+    cents += falloff * DERELICT_DEPRESSION_PEAK_CENTS;
+  }
+  const rounded = Math.round(cents);
+  return { name: 'derelict', cents: rounded === 0 ? 0 : -rounded }; // avoid emitting -0
+}
+
 /**
  * Itemized land value at world coordinate `(wx, wy)` (KTD2). Pure: repeated
  * queries, in any order, never mutate `state` and always return the same
@@ -194,6 +222,7 @@ export function landValueAt(state: GameState, wx: number, wy: number): LandValue
     stationUpliftItem(state, wx, wy),
     districtDevelopmentItem(state, wx, wy),
     severanceItem(state, wx, wy),
+    derelictItem(state, wx, wy),
   ];
   const rawSum = items.reduce((sum, item) => sum + item.cents, 0);
   const totalCents = Math.max(LAND_VALUE_FLOOR, rawSum);

@@ -82,12 +82,12 @@ describe('determinism, persistence, and schema migration (U7, KTD9, R9, R10)', (
     );
   });
 
-  it('a v4 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
-    expect(SCHEMA_VERSION).toBe(4);
+  it('a v5 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
+    expect(SCHEMA_VERSION).toBe(5);
     const live = generateGame(21);
     for (let i = 0; i < 12; i++) tick(live);
     const snapshot = serializeSave(live);
-    expect((JSON.parse(snapshot) as { version: number }).version).toBe(4);
+    expect((JSON.parse(snapshot) as { version: number }).version).toBe(5);
 
     for (let i = 0; i < 12; i++) tick(live);
     const liveFinal = serialize(live);
@@ -180,5 +180,60 @@ describe('district persistence (M4 U2/U8, R3, R14, AE4)', () => {
     const afterSave = serializeSave(after);
 
     expect(afterSave).toBe(beforeSave);
+  });
+});
+
+describe('severance, station type, and derelict persistence (milestone 5 U7, R11-R14)', () => {
+  const OX = 17;
+  const OY = 0;
+
+  it('a save with cuts, a typed station, and a derelict site round-trips and resumes byte-identically', () => {
+    const live = generateGame(21);
+    live.moneyCents = 1_000_000_00;
+    live.world = { width: 40, height: 28 };
+    applyIntent(live, { kind: 'buildStation', x: OX, y: OY, radius: 2, stationType: 'freight' });
+    applyIntent(live, { kind: 'layTrack', ax: OX, ay: OY, bx: OX + 1, by: OY });
+    const stationId = live.stations[0].id;
+    applyIntent(live, { kind: 'moveStation', stationId, x: OX + 3, y: OY });
+    for (let i = 0; i < 20; i++) tick(live);
+
+    expect(live.derelictSites.length).toBeGreaterThan(0);
+    expect(live.districts.some((d) => d.cuts.length > 0)).toBe(true);
+    expect(live.stations[0].stationType).toBe('freight');
+
+    const restored = deserializeSave(serializeSave(live));
+    expect(serialize(restored)).toBe(serialize(live));
+    expect(restored.derelictSites).toEqual(live.derelictSites);
+    expect(restored.districts.map((d) => d.cuts)).toEqual(live.districts.map((d) => d.cuts));
+  });
+
+  it('a run resumed from a snapshot taken after a relocation ticks identically to an uninterrupted run', () => {
+    const liveLive = generateGame(21);
+    liveLive.moneyCents = 1_000_000_00;
+    liveLive.world = { width: 40, height: 28 };
+    applyIntent(liveLive, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+    applyIntent(liveLive, { kind: 'moveStation', stationId: liveLive.stations[0].id, x: OX + 3, y: OY });
+    for (let i = 0; i < 15; i++) tick(liveLive);
+    const snapshot = serializeSave(liveLive);
+
+    for (let i = 0; i < 15; i++) tick(liveLive);
+    const liveFinal = serialize(liveLive);
+
+    const resumed = deserializeSave(snapshot);
+    for (let i = 0; i < 15; i++) tick(resumed);
+    expect(serialize(resumed)).toBe(liveFinal);
+  });
+
+  it('derelict records round-trip and survive replay deterministically', () => {
+    const run = () => {
+      const s = generateGame(21);
+      s.moneyCents = 1_000_000_00;
+      s.world = { width: 40, height: 28 };
+      applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+      applyIntent(s, { kind: 'moveStation', stationId: s.stations[0].id, x: OX + 3, y: OY });
+      for (let i = 0; i < 15; i++) tick(s);
+      return s;
+    };
+    expect(serialize(run())).toBe(serialize(run()));
   });
 });

@@ -113,6 +113,11 @@ async function boot() {
   // buildStation click — boot-scope view state, same status as `buildMode`,
   // never GameState (App.tsx's docblock).
   let stationType: StationType = DEFAULT_STATION_TYPE;
+  // Milestone 5 U7 (R11, KTD8): the station id picked by the first click of
+  // a move-mode gesture — boot-scope view state, same status as `stationType`
+  // above, cleared on any mode change (`onBuildModeChange` below) the same
+  // way a pending survey is.
+  let selectedStationForMove: string | null = null;
   const survey = new SurveyController();
   const canvas = renderer.app.canvas as HTMLCanvasElement;
   let lastPointer = { x: 0, y: 0 };
@@ -151,6 +156,17 @@ async function boot() {
       store.dispatch({ kind: 'buildStation', x, y, radius: 2, stationType });
     } else if (buildMode === 'survey') {
       survey.click({ x, y });
+    } else if (buildMode === 'move') {
+      // First click selects a station at the clicked tile; second click
+      // (anywhere else) relocates it there. Clicking empty ground before any
+      // station is selected is a no-op, not an error (R11's minimal UI).
+      if (selectedStationForMove === null) {
+        const hit = store.getState().stations.find((s) => s.x === x && s.y === y);
+        if (hit) selectedStationForMove = hit.id;
+      } else {
+        store.dispatch({ kind: 'moveStation', stationId: selectedStationForMove, x, y });
+        selectedStationForMove = null;
+      }
     }
   });
   // Esc cancels a pending survey (the state diagram's Proposing -> Idle),
@@ -197,6 +213,7 @@ async function boot() {
         onBuildModeChange: (mode: BuildMode) => {
           buildMode = mode;
           survey.reset(); // any mode change clears any pending survey/overlay (both directions)
+          selectedStationForMove = null; // any mode change clears a pending move selection too
           canvas.style.cursor = mode === 'none' ? 'default' : 'crosshair';
         },
         onStationTypeChange: (t: StationType) => {

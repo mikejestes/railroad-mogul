@@ -29,7 +29,11 @@ export type Intent =
    *  from that recomputation. This is what keeps a stale UI proposal, a
    *  race with a concurrent state change, or a hand-crafted intent from
    *  ever committing a route at the wrong price. */
-  | { kind: 'commitRoute'; waypoints: Tile[] };
+  | { kind: 'commitRoute'; waypoints: Tile[] }
+  /** Relocate a station (milestone 5 U7, KTD8): full station cost, no
+   *  refund; leaves a permanent derelict record at the old tile. See
+   *  `sim/model/track.ts`'s `moveStation`. */
+  | { kind: 'moveStation'; stationId: string; x: number; y: number };
 
 export type Listener = (state: GameState) => void;
 

@@ -84,10 +84,13 @@ export function districtsInView(
  * and no less.
  *
  * Known milestone-5 limitation: this key does not include a term for
- * `landValueAt` (U6) or `district.cuts` (U4/U5) — both can change without
- * any of `quantizeDistrict`'s own fields changing (e.g. a neighboring
- * station's catchment newly overlapping this district's parcels shifts
- * sampled land value with zero channel movement here). A resident texture
+ * `landValueAt` (U6), `district.cuts` (U4/U5), or `state.derelictSites`
+ * (U7) — all three can change without any of `quantizeDistrict`'s own
+ * fields changing (e.g. a neighboring station's catchment newly overlapping
+ * this district's parcels shifts sampled land value with zero channel
+ * movement here; a station elsewhere on the map relocating appends a
+ * derelict site that could fall inside this district's rendered extent
+ * without touching this district's own record at all). A resident texture
  * can therefore go stale until the next channel-driven regeneration. This
  * is a rendering-only staleness gap — GameState/the save are unaffected,
  * and the repo's no-rendering-tests policy leaves this class of key
@@ -107,6 +110,11 @@ const USE_COLORS = {
 const STREET_COLOR = 0x2a2a2a;
 const STATION_SQUARE_COLOR = 0xf1faee;
 const VACANT_ALPHA = 0.25;
+/** Milestone 5 U7 (R13): the abandoned-yard mark's color — a dull rust,
+ *  distinct from every building-use color and from the plain vacancy fade
+ *  (`VACANT_ALPHA`), so a derelict site reads as a different KIND of scar,
+ *  not just another empty building. */
+const DERELICT_YARD_COLOR = 0x6b3f2a;
 
 interface ResidentScene {
   texture: RenderTexture;
@@ -218,6 +226,23 @@ export class DistrictRenderer {
     g.rect(stationPx.x, stationPx.y, Math.max(2, stationSizePx), Math.max(2, stationSizePx)).fill({
       color: STATION_SQUARE_COLOR,
     });
+
+    // Derelict yards (milestone 5 U7, R13): a dark X over a faint patch —
+    // the abandoned-yard scar, distinct from a vacant footprint's plain
+    // faded fill.
+    for (const yard of scene.derelictYards) {
+      const centerPx = worldToLocalPx(yard.x, yard.y);
+      const sizePx = Math.max(4, (yard.size / (extentTiles * 2)) * SCENE_TEXTURE_PX);
+      g.rect(centerPx.x - sizePx / 2, centerPx.y - sizePx / 2, sizePx, sizePx).fill({
+        color: DERELICT_YARD_COLOR,
+        alpha: 0.6,
+      });
+      g.moveTo(centerPx.x - sizePx / 2, centerPx.y - sizePx / 2)
+        .lineTo(centerPx.x + sizePx / 2, centerPx.y + sizePx / 2)
+        .moveTo(centerPx.x + sizePx / 2, centerPx.y - sizePx / 2)
+        .lineTo(centerPx.x - sizePx / 2, centerPx.y + sizePx / 2)
+        .stroke({ color: DERELICT_YARD_COLOR, width: 2 });
+    }
 
     const texture = RenderTexture.create({ width: SCENE_TEXTURE_PX, height: SCENE_TEXTURE_PX });
     this.renderer.render({ container: g, target: texture });

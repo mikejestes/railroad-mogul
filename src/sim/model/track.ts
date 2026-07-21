@@ -231,6 +231,58 @@ export function buildStation(
   return true;
 }
 
+/**
+ * An abandoned station site (milestone 5 U7, KTD8/KTD9): the tile a station
+ * moved away from. Permanent — `state.derelictSites` (`sim/state.ts`) is
+ * append-only, the same discipline `District.cuts` follows (U3). `day` is
+ * kept for player-facing history/attribution, not for any decay
+ * calculation — the depression a derelict site casts is constant and
+ * bottomed (KTD9): it never deepens, never fades.
+ */
+export interface DerelictSite {
+  x: number;
+  y: number;
+  day: number;
+}
+
+/**
+ * Relocate a station (milestone 5 U7, R11/R12/R13, KTD8). Validates the new
+ * tile (buildable, in bounds, not the station's current tile) and
+ * affordability at the *full* station cost for the station's own
+ * (unchanged) radius — no refund for the sunk cost of the old site, per the
+ * origin's rejection of retained value. On success: charges the full cost,
+ * appends a permanent `DerelictSite` at the OLD tile (captured before the
+ * position changes), moves the station in place (id/radius/stationType all
+ * preserved — relocation is not re-siting, re-typing, or re-tiering), and
+ * records the station's footprint as a new cut at the new site through the
+ * same `recordCuts` helper `buildStation` uses.
+ *
+ * Deliberately does NOT decide district continuity/creation (the
+ * within-footprint-vs-beyond split, KTD8's flow diagram) — that decision
+ * needs `ensureDistrict`, which lives in `store/applyIntents.ts` (the sim
+ * layer never imports from the store layer). The `moveStation` intent
+ * handler there calls this function first, then applies that decision using
+ * the station's pre-move district lookup it captured beforehand.
+ */
+export function moveStation(state: GameState, stationId: string, x: number, y: number): boolean {
+  const station = state.stations.find((s) => s.id === stationId);
+  if (!station) return false;
+  const w = state.world;
+  if (!inBounds(w, x, y) || terrainAt(x, y) === 'sea') return false;
+  if (x === station.x && y === station.y) return false; // not a relocation — refuse rather than charge for nothing
+  const cost = STATION_COST[Math.min(STATION_COST.length - 1, Math.max(0, station.radius - 1))];
+  if (state.moneyCents < cost) return false;
+
+  const oldX = station.x;
+  const oldY = station.y;
+  addMoney(state, -cost); // full cost, no refund (KTD8)
+  state.derelictSites.push({ x: oldX, y: oldY, day: state.timeDays }); // permanent scar at the old site
+  station.x = x;
+  station.y = y;
+  recordCuts(state.districts, [{ ax: x, ay: y, bx: x, by: y, strength: STATION_CUT_STRENGTH }]);
+  return true;
+}
+
 /** Is a tile within a station's Chebyshev catchment radius? */
 export function inCatchment(station: Station, x: number, y: number): boolean {
   return Math.max(Math.abs(station.x - x), Math.abs(station.y - y)) <= station.radius;

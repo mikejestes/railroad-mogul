@@ -173,12 +173,29 @@ export interface StreetSegment {
   by: number;
 }
 
+/** An abandoned station site rendered into a district's scene (milestone 5
+ *  U7, R13, KTD9/KTD10) — the derelict-yard element, distinct from the
+ *  vacuum band a *cut* produces (U4): a single point scar, not a line. */
+export interface DerelictYard {
+  /** World-tile-space center. */
+  x: number;
+  y: number;
+  /** World-tile-space radius the yard's abandoned-lot mark occupies. */
+  size: number;
+}
+
 export interface DistrictScene {
   districtId: string;
   /** World-tile-space station square. */
   stationSquare: { x: number; y: number; size: number };
   streets: StreetSegment[];
   footprints: Footprint[];
+  /** Abandoned station sites within this scene's rendered extent (milestone
+   *  5 U7, R13) — permanent scars a relocation leaves behind, drawn as an
+   *  abandoned yard. Bounded by construction: only `state.derelictSites`
+   *  within `extent` of the anchor are included, and that list itself is
+   *  bounded by how many times stations have ever been moved. */
+  derelictYards: DerelictYard[];
 }
 
 // --- Bounded, development-driven scene parameters ---
@@ -265,6 +282,13 @@ export const SEVERANCE_SCENE_RADIUS_FRAC = 0.12;
 export function parcelInVacuum(bx: number, by: number, sceneCuts: readonly SceneCut[], radius: number): boolean {
   return sceneCuts.some((c) => distanceToChord(bx, by, c) <= radius);
 }
+
+/** Derelict-yard blight radius, as a fraction of the district's rendered
+ *  `extent` (milestone 5 U7, R13, KTD9/KTD10) — the same stylized-fraction
+ *  treatment `SEVERANCE_SCENE_RADIUS_FRAC` gets, sized a little larger: an
+ *  abandoned yard is a single point scar rather than a line, so its blight
+ *  needs more radius to read as a real presence in the scene. */
+export const DERELICT_SCENE_RADIUS_FRAC = 0.18;
 
 function lerp(a: number, b: number, t: number): number {
   const clamped = Math.min(1, Math.max(0, t));
@@ -408,6 +432,27 @@ export function generateDistrictScene(
   const sceneCuts = cutsToSceneSpace(district.cuts, anchor, extent);
   const vacuumRadius = extent * SEVERANCE_SCENE_RADIUS_FRAC;
 
+  // Derelict yards (milestone 5 U7, R13, KTD9/KTD10): every abandoned
+  // station site within this district's footprint, rescaled into scene
+  // space the same proportional way cuts are (KTD1's footprint-to-extent
+  // stylization) — `state.derelictSites` is global, so this filters to the
+  // ones this particular scene actually reaches. `relDerelictYards` (anchor-
+  // relative offsets) drives the per-parcel proximity check below;
+  // `derelictYards` (absolute anchor+offset, matching every other DistrictScene
+  // element's coordinate convention) is what the renderer draws.
+  const derelictScale = extent / DISTRICT_FOOTPRINT_TILES;
+  const relDerelictYards: { x: number; y: number }[] = [];
+  const derelictYards: DerelictYard[] = [];
+  for (const site of state.derelictSites) {
+    const distFromAnchor = Math.max(Math.abs(site.x - anchor.x), Math.abs(site.y - anchor.y));
+    if (distFromAnchor > DISTRICT_FOOTPRINT_TILES) continue;
+    const relX = (site.x - anchor.x) * derelictScale;
+    const relY = (site.y - anchor.y) * derelictScale;
+    relDerelictYards.push({ x: relX, y: relY });
+    derelictYards.push({ x: anchor.x + relX, y: anchor.y + relY, size: Math.max(extent * 0.06, 0.006) });
+  }
+  const derelictRadius = extent * DERELICT_SCENE_RADIUS_FRAC;
+
   const footprints: Footprint[] = [];
   const parcelSize = Math.max(0.006, extent / Math.sqrt(buildingCount + 1) / 3);
   for (let i = 0; i < buildingCount; i++) {
@@ -429,8 +474,12 @@ export function generateDistrictScene(
     // R7/R8/R10: a parcel along a cut is the border vacuum — forced vacant,
     // no tall building classes — regardless of what health-driven vacancy,
     // density, or value would otherwise have drawn there (U4's local
-    // conditioning wins over U6's value-form coupling, per KTD10).
+    // conditioning wins over U6's value-form coupling, per KTD10). A parcel
+    // near a derelict yard reads the same way (U7, R13, KTD9's "depresses...
+    // scene condition"): both are permanent, local scars.
     const severed = parcelInVacuum(bx, by, sceneCuts, vacuumRadius);
+    const nearDerelict = relDerelictYards.some((y) => Math.hypot(bx - y.x, by - y.y) <= derelictRadius);
+    const blighted = severed || nearDerelict;
 
     // Milestone 5 U6 (R3, KTD10): blend the scene's one sampled richness
     // (`anchorValueFraction`) against this parcel's own distance from the
@@ -438,7 +487,7 @@ export function generateDistrictScene(
     // itself peaks at the anchor) a parcel near the station reads richer
     // than a fringe parcel of the same district.
     const positionalRichness = 1 - radiusFrac * 0.8;
-    const valueFactor = severed ? 0 : clamp01(anchorValueFraction * positionalRichness);
+    const valueFactor = blighted ? 0 : clamp01(anchorValueFraction * positionalRichness);
 
     footprints.push({
       rect: {
@@ -447,10 +496,10 @@ export function generateDistrictScene(
         width: parcelSize,
         height: parcelSize,
       },
-      heightClass: severed ? 0 : heightClassFor(q.density, heightJitter, valueFactor),
+      heightClass: blighted ? 0 : heightClassFor(q.density, heightJitter, valueFactor),
       use,
       ageClass: ageClassFor(age, ageJitter),
-      vacant: severed ? true : vacancyRoll < (1 - health) * VACANCY_MAX_RATE,
+      vacant: blighted ? true : vacancyRoll < (1 - health) * VACANCY_MAX_RATE,
     });
   }
 
@@ -459,5 +508,6 @@ export function generateDistrictScene(
     stationSquare: { x: anchor.x, y: anchor.y, size: STATION_SQUARE_SIZE },
     streets,
     footprints,
+    derelictYards,
   };
 }
