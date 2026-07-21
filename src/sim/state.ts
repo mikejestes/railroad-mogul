@@ -5,6 +5,7 @@ import type { Station, TrackNetwork, Route, DerelictSite } from './model/track.t
 import type { Train } from './model/trains.ts';
 import type { District } from './model/districts.ts';
 import type { RiverGraph } from '../world/rivers.ts';
+import type { Charter, Parcel } from './model/land.ts';
 
 /**
  * The whole simulation world as plain, serializable data (KTD2). No class
@@ -87,6 +88,23 @@ export interface GameState {
    *  (KTD9) — moving a station leaves a scar that does not heal and does
    *  not deepen. */
   derelictSites: DerelictSite[];
+  /** Chartered corridors (milestone 6 U2, KTD1/KTD11): paid, expiring
+   *  acquisition-rights grants along a surveyed route. Append-only in
+   *  practice — status transitions (`'live' -> 'consumed' | 'lapsed'`)
+   *  mutate in place, never removed, the same permanence discipline
+   *  `District.cuts`/`derelictSites` follow. */
+  charters: Charter[];
+  /** Owned land (milestone 6 U3, KTD4/KTD11, R11): a compact list of
+   *  parcels, never a per-tile ownership map. */
+  parcels: Parcel[];
+  /** Monotonic counter for charter ids (milestone 6, R11 — the established
+   *  counter convention). Advances only on a successfully granted charter
+   *  (`charterRoute`, `sim/model/land.ts`), never on a refused/unaffordable
+   *  attempt. */
+  nextCharterId: number;
+  /** Monotonic counter for parcel ids (milestone 6, R11), advancing only on
+   *  a successful `buyLand` (same discipline as `nextCharterId`). */
+  nextParcelId: number;
   /** Save-format version, for migrations (U11). */
   schemaVersion: number;
 }
@@ -123,8 +141,19 @@ export const START_YEAR = 1830;
  * before this milestone, so there is nothing to synthesize it from; `migrate`
  * refuses the version mismatch outright rather than fabricating a severance
  * history that never happened.
+ *
+ * Bumped 5 -> 6 (land-economics-and-speculation milestone, KTD11): schema 6
+ * adds `state.charters`, `state.parcels`, `nextCharterId`, and `nextParcelId`
+ * (`model/land.ts`). Same precedent again: a charter's fee/window and a
+ * parcel's purchase-time itemization are path-dependent history a schema-5
+ * save never recorded (the intents did not exist yet), so there is nothing
+ * to synthesize either from; `migrate` refuses the mismatch outright rather
+ * than special-casing this one bump with fabricated empty arrays, keeping
+ * the "refuse rather than guess" rule uniform across every version
+ * boundary. No save UI, autosave, or load path ships in the running app yet,
+ * so no schema-5 save exists in the wild to strand.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export function createGameState(seed: number): GameState {
   return {
@@ -147,6 +176,10 @@ export function createGameState(seed: number): GameState {
     nextDistrictId: 0,
     startYear: START_YEAR,
     derelictSites: [],
+    charters: [],
+    parcels: [],
+    nextCharterId: 0,
+    nextParcelId: 0,
     schemaVersion: SCHEMA_VERSION,
   };
 }

@@ -1,6 +1,7 @@
 import type { GameState } from '../sim/state.ts';
 import type { Tile } from '../sim/pathfinding.ts';
 import type { StationType } from '../sim/model/track.ts';
+import type { ParcelAddress } from '../sim/model/land.ts';
 
 /**
  * The bridge between the simulation kernel and the view layers (KTD1, KTD2).
@@ -33,7 +34,19 @@ export type Intent =
   /** Relocate a station (milestone 5 U7, KTD8): full station cost, no
    *  refund; leaves a permanent derelict record at the old tile. See
    *  `sim/model/track.ts`'s `moveStation`. */
-  | { kind: 'moveStation'; stationId: string; x: number; y: number };
+  | { kind: 'moveStation'; stationId: string; x: number; y: number }
+  /** Charter a surveyed corridor (milestone 6 U2, KTD1). Carries only the
+   *  waypoint list — never a path or fee the UI computed — so `applyIntent`
+   *  re-runs `surveyRoute` and re-derives the fee from that recomputation,
+   *  the same discipline `commitRoute` already follows (KTD2 of milestone
+   *  3). See `sim/model/land.ts`'s `charterRoute`. */
+  | { kind: 'charterRoute'; waypoints: Tile[] }
+  /** Buy the parcel at `address` (milestone 6 U3, KTD2/KTD8). See
+   *  `sim/model/land.ts`'s `buyLand`. */
+  | { kind: 'buyLand'; address: ParcelAddress }
+  /** Sell an owned parcel by id (milestone 6 U3, KTD7). See
+   *  `sim/model/land.ts`'s `sellLand`. */
+  | { kind: 'sellLand'; parcelId: string };
 
 export type Listener = (state: GameState) => void;
 

@@ -1,6 +1,6 @@
 import type { GameState } from '../state.ts';
 import { terrainAt, type Terrain } from '../../world/geography.ts';
-import { inCatchment, type Station } from './track.ts';
+import { inCatchment } from './track.ts';
 import { DISTRICT_FOOTPRINT_TILES, distanceToChord, activeDistrictFor } from './districts.ts';
 
 /**
@@ -117,36 +117,47 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+/**
+ * The station-uplift SHAPE alone (milestone 6 KTD2): peak
+ * `STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS * development`
+ * at `distance === 0`, linear falloff to 0 at `radius`. Factored out of
+ * `stationUpliftItem` (below) so milestone 6's anticipation pricing
+ * (`sim/model/land.ts`'s `projectedUplift`) instantiates this *exact* shape
+ * with pinned reference inputs (a documented reference radius and a pinned
+ * `ANTICIPATION_REFERENCE_DEVELOPMENT`, never the live — often zero — district
+ * record) rather than a second, hand-copied formula that could silently drift
+ * out of sync with what a real station's catchment will pay out once built.
+ * Pure; `distance` beyond `radius` (or a non-positive `radius`, guarded the
+ * same way `stationFalloff` was) contributes nothing.
+ */
+export function stationUpliftShapeCents(radius: number, development: number, distance: number): number {
+  if (radius <= 0) return distance <= 0 ? STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS * clamp01(development) : 0;
+  if (distance > radius) return 0;
+  const falloff = 1 - distance / radius;
+  return falloff * (STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS * clamp01(development));
+}
+
 /** Terrain-base item: a pure function of coordinates, no state input at all
  *  (R1's spatial variation substrate). */
 function terrainBaseItem(wx: number, wy: number): LandValueItem {
   return { name: 'terrain-base', cents: TERRAIN_BASE_CENTS[terrainAt(wx, wy)] };
 }
 
-/** Linear falloff from 1 at a station's own tile to 0 at its catchment
- *  edge (`station.radius`), Chebyshev — the same catchment shape
- *  `inCatchment` uses everywhere else in this codebase, so "in catchment"
- *  never disagrees between delivery/traffic and land value. */
-function stationFalloff(station: Station, wx: number, wy: number): number {
-  if (!inCatchment(station, wx, wy)) return 0;
-  if (station.radius <= 0) return 1;
-  const dist = Math.max(Math.abs(wx - station.x), Math.abs(wy - station.y));
-  return 1 - dist / station.radius;
-}
-
 /** Station-uplift item (R2, AE1): summed across every station whose
  *  catchment covers `(wx, wy)` — overlapping catchments compose additively,
- *  per the plan's own test scenario. */
+ *  per the plan's own test scenario. Uses the shared `inCatchment` (matching
+ *  falloff-zero exactly at the catchment edge, Chebyshev) and
+ *  `stationUpliftShapeCents` for the peak/falloff math (milestone 6, KTD2). */
 function stationUpliftItem(state: GameState, wx: number, wy: number): LandValueItem {
   let cents = 0;
   for (const station of state.stations) {
-    const falloff = stationFalloff(station, wx, wy);
-    if (falloff <= 0) continue;
+    if (!inCatchment(station, wx, wy)) continue;
+    const dist = Math.max(Math.abs(wx - station.x), Math.abs(wy - station.y));
     // Milestone 5 U7 (KTD8): the station's *active* district, not merely
     // the first one sharing its id — see `activeDistrictFor`'s own docblock.
     const district = activeDistrictFor(state, station.id);
     const development = district ? clamp01(district.development) : 0;
-    cents += falloff * (STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS * development);
+    cents += stationUpliftShapeCents(station.radius, development, dist);
   }
   return { name: 'station-uplift', cents: Math.round(cents) };
 }

@@ -13,6 +13,7 @@ import {
   activeDistrictFor,
   type Cut,
 } from '../sim/model/districts.ts';
+import { charterRoute, consumeCharters, buyLand, sellLand } from '../sim/model/land.ts';
 
 const ALL_GOODS = Object.keys(GOODS) as GoodId[];
 
@@ -128,6 +129,10 @@ export function applyIntent(state: GameState, intent: Intent): void {
       if (!survey.ok) break;
       if (state.moneyCents < survey.totalCents) break;
       emitRoute(state, `route-${state.nextRouteId++}`, intent.waypoints, survey);
+      // Milestone 6 U2 (KTD1): building inside a live charter's corridor
+      // consumes it — a charter's fate (consumed vs. lapsed) is decided here
+      // or by landSystem's expiry, never both.
+      consumeCharters(state, survey.path);
       break;
     }
     case 'moveStation': {
@@ -170,6 +175,23 @@ export function applyIntent(state: GameState, intent: Intent): void {
       }
       break;
     }
+    case 'charterRoute':
+      // Milestone 6 U2 (KTD1): self-contained validate-then-mutate
+      // (`buyTrain`'s precedent) — re-surveys from waypoints, debits the
+      // fee, grants corridor rights; a refused or unaffordable charter is a
+      // no-op, `nextCharterId` included.
+      charterRoute(state, intent.waypoints);
+      break;
+    case 'buyLand':
+      // Milestone 6 U3 (KTD2/KTD3/KTD8): rights + affordability validated
+      // inside `buyLand` itself; a refusal is a no-op, `nextParcelId`
+      // included.
+      buyLand(state, intent.address);
+      break;
+    case 'sellLand':
+      // Milestone 6 U3 (KTD7): unknown parcel id is a no-op.
+      sellLand(state, intent.parcelId);
+      break;
     default: {
       const unhandled: never = intent;
       throw new Error(`applyIntent: unhandled intent kind: ${(unhandled as Intent).kind}`);
