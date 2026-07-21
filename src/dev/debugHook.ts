@@ -9,7 +9,8 @@ import { surveyRoute as runSurveyRoute, type SurveyResult } from '../sim/surveyi
 import type { Tile } from '../sim/pathfinding.ts';
 import type { District } from '../sim/model/districts.ts';
 import { generateDistrictScene, type DistrictScene } from '../world/streets.ts';
-import { DEFAULT_STATION_TYPE, type StationType } from '../sim/model/track.ts';
+import { DEFAULT_STATION_TYPE, type StationType, type DerelictSite } from '../sim/model/track.ts';
+import { landValueAt as runLandValueAt, type LandValue } from '../sim/model/landValue.ts';
 
 /**
  * Dev-only inspection & control hook (installed behind import.meta.env.DEV).
@@ -61,6 +62,21 @@ import { DEFAULT_STATION_TYPE, type StationType } from '../sim/model/track.ts';
  * scene any number of times never mutates `state` or the save (R9's
  * scene-purity gate) — `districtScene` calls straight into the pure
  * generator with no caching of its own.
+ *
+ * Station-siting/severance milestone U8 closes this milestone the same way:
+ * `landValueAt` re-exports `sim/model/landValue.ts`'s itemized, pure
+ * derivation verbatim (read-only — the module's own KTD2 purity guarantee
+ * means calling it any number of times, at any coordinates, never mutates
+ * `state` or grows the save), so a browser driver can assert AE1 ("value
+ * rises in the catchment, falls off with distance") directly by value —
+ * `totalCents` and each named item — the moment a station is sited, without
+ * waiting on or interpreting a rendered scene. `moveStation` follows the
+ * `buildStation`/`commitRoute` precedent: the exact `moveStation` intent the
+ * map's move-mode click flow (`main.ts`) dispatches, applied immediately via
+ * `applyNow` so a browser driver can assert AE4 (both scars — the permanent
+ * cut and the derelict yard — outlive a relocation) without depending on the
+ * rAF loop. `derelictSites` exposes the live, append-only list the same way
+ * `districts` already does.
  */
 export interface DebugApi {
   /** Live game state (always current). */
@@ -74,6 +90,12 @@ export interface DebugApi {
   drain(): void;
   buildStation(x: number, y: number, radius?: number, stationType?: StationType): void;
   layTrack(ax: number, ay: number, bx: number, by: number): void;
+  /** Relocate a station (milestone 5 U7/U8, KTD8) — the exact `moveStation`
+   *  intent the map's move-mode click flow dispatches, applied immediately
+   *  via `applyNow` (the `buildStation`/`commitRoute` precedent). A no-op
+   *  (per `applyIntent`'s own refusal handling) if the target tile is sea,
+   *  out of bounds, the station's current tile, or unaffordable. */
+  moveStation(stationId: string, x: number, y: number): void;
   /** Create a train looping between two stations; returns its id. */
   buyTrain(fromStationId: string, toStationId: string, engineId?: string): string;
   /** Read-only preview of a survey (U7) — the same pure `surveyRoute` the UI
@@ -113,6 +135,17 @@ export interface DebugApi {
    *  mutates state — safe to call any number of times (R9's scene-purity
    *  gate; see the module docblock). */
   districtScene(districtId: string): DistrictScene;
+  /** Itemized, derived land value at a world coordinate (milestone 5 U5/U8,
+   *  KTD2) — re-exports `sim/model/landValue.ts`'s `landValueAt` verbatim.
+   *  Never mutates `state`; safe to call any number of times, at any
+   *  coordinates, for value assertions (`totalCents`, or any named item —
+   *  `'terrain-base' | 'station-uplift' | 'district-development' |
+   *  'severance' | 'derelict' | 'floor-adjustment'`). */
+  landValueAt(wx: number, wy: number): LandValue;
+  /** Live, append-only list of abandoned station sites (milestone 5 U7/U8,
+   *  KTD8/KTD9) — the same live-reference pattern `districts` already
+   *  follows (through the existing version channel, no second store). */
+  readonly derelictSites: readonly DerelictSite[];
   /** Snapshot of headline numbers for quick assertions. */
   summary(): {
     tick: number;
@@ -156,6 +189,7 @@ export function installDebugHook(store: GameStore, clock: GameClock, seed: numbe
     buildStation: (x, y, radius = 2, stationType = DEFAULT_STATION_TYPE) =>
       applyNow({ kind: 'buildStation', x, y, radius, stationType }),
     layTrack: (ax, ay, bx, by) => applyNow({ kind: 'layTrack', ax, ay, bx, by }),
+    moveStation: (stationId, x, y) => applyNow({ kind: 'moveStation', stationId, x, y }),
     surveyRoute: (waypoints) => runSurveyRoute(store.getState(), waypoints),
     commitRoute: (waypoints) => applyNow({ kind: 'commitRoute', waypoints }),
     buyTrain: (fromStationId, toStationId, engineId = 'american') => {
@@ -181,6 +215,10 @@ export function installDebugHook(store: GameStore, clock: GameClock, seed: numbe
       const district = s.districts.find((d) => d.id === districtId);
       if (!district) throw new Error(`districtScene: no district with id ${districtId}`);
       return generateDistrictScene(s.rng.seed, district, { x: district.anchorX, y: district.anchorY }, s);
+    },
+    landValueAt: (wx, wy) => runLandValueAt(store.getState(), wx, wy),
+    get derelictSites() {
+      return store.getState().derelictSites;
     },
     setCamera: ({ x, y, scale }) => {
       // Reuse the same methods real wheel/pointer input drives (zoomAt,

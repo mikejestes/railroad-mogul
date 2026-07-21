@@ -262,4 +262,15 @@ describe('moveStation (milestone 5 U7, R11/R12/R13, KTD8)', () => {
     expect(moveStation(s, 'ghost', OX + 1, OY)).toBe(false);
     expect(serialize(s)).toBe(before);
   });
+
+  it('the public API offers no derelict-site-removal function (structural never-heals guard)', async () => {
+    const mod = (await import('../../src/sim/model/track.ts')) as Record<string, unknown>;
+    for (const name of Object.keys(mod)) {
+      expect(name.toLowerCase()).not.toMatch(/remove.*derelict|clear.*derelict|delete.*derelict/);
+    }
+    const stateMod = (await import('../../src/sim/state.ts')) as Record<string, unknown>;
+    for (const name of Object.keys(stateMod)) {
+      expect(name.toLowerCase()).not.toMatch(/remove.*derelict|clear.*derelict|delete.*derelict/);
+    }
+  });
 });
