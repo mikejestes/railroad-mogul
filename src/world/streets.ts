@@ -1,5 +1,5 @@
-import type { District } from '../sim/model/districts.ts';
-import { districtHealth, blockGranularity, ageVariety } from '../sim/model/districts.ts';
+import type { District, Cut } from '../sim/model/districts.ts';
+import { districtHealth, blockGranularity, ageVariety, DISTRICT_FOOTPRINT_TILES } from '../sim/model/districts.ts';
 
 /**
  * Street-scene generation (M4 U6, KTD8, R2/R9/R11/R12). `generateDistrictScene`
@@ -31,6 +31,15 @@ import { districtHealth, blockGranularity, ageVariety } from '../sim/model/distr
  * the invariants that matter are determinism, quantization stability,
  * boundedness, and record-conditioned variety (AE1) — the aesthetic itself
  * is free to change without touching those.
+ *
+ * Milestone 5 U4 (R7/R8/R10, KTD10): `district.cuts` condition the scene —
+ * every parcel within `SEVERANCE_SCENE_RADIUS_FRAC` of a cut's rescaled
+ * chord (`cutsToSceneSpace`) is forced vacant with no tall building classes,
+ * the border vacuum made visible. `district.cuts` is *not* quantized
+ * (unlike the continuous channels above) — it is already a discrete, bounded
+ * list that only ever grows by whole cuts, never drifts continuously, so
+ * there is no sub-quantum-change case to guard against the way there is for
+ * `development`/`residential`/etc.
  */
 
 // --- Quantization (KTD8) ---
@@ -162,6 +171,73 @@ export const MAX_BLOCKS = 24;
 /** Vacancy rate at health = 0; scales linearly to 0 at health = 1 (R8). */
 export const VACANCY_MAX_RATE = 0.5;
 
+// --- Severance conditioning (milestone 5 U4, R7/R8/R10, KTD10) -------------
+//
+// `District.cuts` (`sim/model/districts.ts`, U3) are recorded in *world*
+// tile coordinates, at distances from the anchor up to `DISTRICT_FOOTPRINT_
+// TILES` (6 tiles) — far outside the scene's own stylized radius (at most
+// `MAX_EXTENT_TILES` = 1 tile, per the plan's Assumptions: the rendered
+// scene is a non-literal stylization, not a to-scale map). A cut plotted at
+// its raw world distance from the anchor would almost never land inside any
+// parcel's stylized position. `cutsToSceneSpace` rescales every cut the same
+// way `severancePenalty`'s centrality term does — as a *fraction* of
+// `DISTRICT_FOOTPRINT_TILES` — onto the scene's own `extent`, so a cut
+// through the anchor lands at the scene's center and a cut at the
+// footprint's edge lands at the scene's edge, preserving relative position
+// across the scale mismatch.
+
+/** A cut's chord in scene-relative space (anchor at the origin, scaled into
+ *  the district's rendered `extent`) — the same space `generateDistrictScene`
+ *  places footprint offsets in before adding the anchor back. */
+export interface SceneCut {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+}
+
+/** Rescale `cuts` (world-coordinate chords, `sim/model/districts.ts`) into
+ *  scene-relative space for a district whose rendered radius is `extent`.
+ *  Pure; exported so the rescaling itself is independently testable (KTD7,
+ *  no-rendering-tests policy). */
+export function cutsToSceneSpace(cuts: readonly Cut[], anchor: { x: number; y: number }, extent: number): SceneCut[] {
+  const scale = extent / DISTRICT_FOOTPRINT_TILES;
+  return cuts.map((c) => ({
+    ax: (c.ax - anchor.x) * scale,
+    ay: (c.ay - anchor.y) * scale,
+    bx: (c.bx - anchor.x) * scale,
+    by: (c.by - anchor.y) * scale,
+  }));
+}
+
+/** Shortest distance from point `(px, py)` to the segment `(ax,ay)-(bx,by)`
+ *  — the standard clamped-projection formula. Degenerates cleanly to
+ *  point-to-point distance for a zero-length (station-footprint) chord. */
+function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSq));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** Vacuum-band half-width, as a fraction of the district's rendered
+ *  `extent` (R8/R10) — a parcel within this distance of any cut, in
+ *  scene-relative space, reads as the border vacuum: forced vacant, no tall
+ *  building classes. Deliberately a fraction of `extent` (not a fixed world-
+ *  tile radius) so the band scales with the same stylization every other
+ *  scene-relative quantity here does. */
+export const SEVERANCE_SCENE_RADIUS_FRAC = 0.12;
+
+/** Whether scene-relative point `(bx, by)` falls within the vacuum band of
+ *  any cut in `sceneCuts` (R7/R8/R10). Pure — the logic under the
+ *  no-rendering-tests policy (KTD7); `generateDistrictScene` just applies
+ *  its answer to `vacant`/`heightClass`. */
+export function parcelInVacuum(bx: number, by: number, sceneCuts: readonly SceneCut[], radius: number): boolean {
+  return sceneCuts.some((c) => distanceToSegment(bx, by, c.ax, c.ay, c.bx, c.by) <= radius);
+}
+
 function lerp(a: number, b: number, t: number): number {
   const clamped = Math.min(1, Math.max(0, t));
   return a + (b - a) * clamped;
@@ -266,6 +342,12 @@ export function generateDistrictScene(
     blockRadii.push(lerp(extent * 0.35, extent, hash01(seed, idHash, 3, b)));
   }
 
+  // Severance conditioning (milestone 5 U4, R7/R8/R10): rescale this
+  // district's permanent cuts into the same scene-relative space parcel
+  // offsets are computed in, once per scene (not once per parcel).
+  const sceneCuts = cutsToSceneSpace(district.cuts, anchor, extent);
+  const vacuumRadius = extent * SEVERANCE_SCENE_RADIUS_FRAC;
+
   const footprints: Footprint[] = [];
   const parcelSize = Math.max(0.006, extent / Math.sqrt(buildingCount + 1) / 3);
   for (let i = 0; i < buildingCount; i++) {
@@ -284,6 +366,11 @@ export function generateDistrictScene(
     const heightJitter = hash01(seed, idHash, 8, i);
     const ageJitter = hash01(seed, idHash, 9, i);
     const vacancyRoll = hash01(seed, idHash, 10, i);
+    // R7/R8/R10: a parcel along a cut is the border vacuum — forced vacant,
+    // no tall building classes — regardless of what health-driven vacancy or
+    // density would otherwise have drawn there. Parcels outside every cut's
+    // band are entirely unaffected (KTD10's "local conditioning wins" scope).
+    const severed = parcelInVacuum(bx, by, sceneCuts, vacuumRadius);
 
     footprints.push({
       rect: {
@@ -292,10 +379,10 @@ export function generateDistrictScene(
         width: parcelSize,
         height: parcelSize,
       },
-      heightClass: heightClassFor(q.density, heightJitter),
+      heightClass: severed ? 0 : heightClassFor(q.density, heightJitter),
       use,
       ageClass: ageClassFor(age, ageJitter),
-      vacant: vacancyRoll < (1 - health) * VACANCY_MAX_RATE,
+      vacant: severed ? true : vacancyRoll < (1 - health) * VACANCY_MAX_RATE,
     });
   }
 

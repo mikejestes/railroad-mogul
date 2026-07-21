@@ -4,14 +4,23 @@ import {
   quantizeDistrict,
   buildingCountFor,
   extentTilesFor,
+  cutsToSceneSpace,
+  parcelInVacuum,
   QUANTUM,
   MIN_BUILDINGS,
   MAX_BUILDINGS,
   MAX_EXTENT_TILES,
   VACANCY_MAX_RATE,
+  SEVERANCE_SCENE_RADIUS_FRAC,
   type DistrictScene,
 } from '../../src/world/streets.ts';
-import { makeDistrict, districtHealth, type District } from '../../src/sim/model/districts.ts';
+import {
+  makeDistrict,
+  districtHealth,
+  DISTRICT_FOOTPRINT_TILES,
+  TRACK_CUT_STRENGTH,
+  type District,
+} from '../../src/sim/model/districts.ts';
 
 // Local factory, per repo test convention.
 function station(id = 'stn-0', x = 5, y = 5) {
@@ -186,5 +195,94 @@ describe('street scene generation (M4 U6, KTD8)', () => {
       expect(scene.stationSquare.x).toBe(ANCHOR.x);
       expect(scene.stationSquare.y).toBe(ANCHOR.y);
     });
+  });
+});
+
+describe('cutsToSceneSpace and parcelInVacuum (milestone 5 U4, R7/R8/R10, KTD10)', () => {
+  it('a cut through the anchor rescales to the scene origin; a cut at the footprint edge rescales to the scene edge', () => {
+    const extent = 0.8;
+    const [throughAnchor] = cutsToSceneSpace(
+      [{ ax: ANCHOR.x, ay: ANCHOR.y, bx: ANCHOR.x, by: ANCHOR.y, strength: 1 }],
+      ANCHOR,
+      extent,
+    );
+    expect(throughAnchor.ax).toBeCloseTo(0, 9);
+    expect(throughAnchor.ay).toBeCloseTo(0, 9);
+
+    const [atEdge] = cutsToSceneSpace(
+      [{ ax: ANCHOR.x + DISTRICT_FOOTPRINT_TILES, ay: ANCHOR.y, bx: ANCHOR.x + DISTRICT_FOOTPRINT_TILES, by: ANCHOR.y, strength: 1 }],
+      ANCHOR,
+      extent,
+    );
+    expect(atEdge.ax).toBeCloseTo(extent, 9);
+  });
+
+  it('parcelInVacuum is true within the band radius of a chord and false well outside it', () => {
+    const sceneCuts = [{ ax: -1, ay: 0, bx: 1, by: 0 }];
+    expect(parcelInVacuum(0, 0, sceneCuts, 0.1)).toBe(true); // on the chord itself
+    expect(parcelInVacuum(0, 0.05, sceneCuts, 0.1)).toBe(true); // within the band
+    expect(parcelInVacuum(0, 5, sceneCuts, 0.1)).toBe(false); // far outside
+  });
+});
+
+describe('severance conditions the scene (milestone 5 U4, R7/R8/R10, KTD10)', () => {
+  it('every parcel the vacuum-band predicate marks near a through-the-anchor cut is forced vacant with heightClass 0', () => {
+    const developed: District = {
+      ...makeDistrict('dst-cut', station()),
+      residential: 0.4,
+      commercial: 0.35,
+      industrial: 0.3,
+      density: 0.6,
+      development: 0.7,
+      episodeCount: 20,
+      firstGrowthDay: 0,
+      lastGrowthDay: 700,
+    };
+    // A real approach line through the anchor (R7: "the track approaching
+    // it"), not a degenerate point — it needs to reach out to where
+    // buildings actually cluster (block radii floor at 0.35 * extent,
+    // `blockCountFor`/the placement loop above) to have anything to sever.
+    const cut: District = {
+      ...developed,
+      cuts: [{ ax: ANCHOR.x - 3, ay: ANCHOR.y, bx: ANCHOR.x + 3, by: ANCHOR.y, strength: TRACK_CUT_STRENGTH }],
+    };
+    const cutScene = generateDistrictScene(7, cut, ANCHOR);
+
+    const extent = extentTilesFor(quantizeDistrict(developed).development);
+    const sceneCuts = cutsToSceneSpace(cut.cuts, ANCHOR, extent);
+    const radius = extent * SEVERANCE_SCENE_RADIUS_FRAC;
+
+    let severedCount = 0;
+    for (const f of cutScene.footprints) {
+      const bx = f.rect.x + f.rect.width / 2 - ANCHOR.x;
+      const by = f.rect.y + f.rect.height / 2 - ANCHOR.y;
+      if (parcelInVacuum(bx, by, sceneCuts, radius)) {
+        severedCount++;
+        expect(f.vacant).toBe(true);
+        expect(f.heightClass).toBe(0);
+      }
+    }
+    // A cut through the anchor, in a district with several parcels
+    // clustered near it, severs at least one.
+    expect(severedCount).toBeGreaterThan(0);
+  });
+
+  it('a cut recorded far outside the footprint (severancePenalty 0, rescaled far from every parcel) leaves the scene byte-identical to the uncut district', () => {
+    const base: District = { ...makeDistrict('dst-far', station()), development: 0.6, residential: 0.4, commercial: 0.3, industrial: 0.3 };
+    const uncutScene = generateDistrictScene(7, base, ANCHOR);
+
+    // Far enough beyond DISTRICT_FOOTPRINT_TILES that severancePenalty's own
+    // centrality term clamps to 0 (no health effect) AND cutsToSceneSpace's
+    // proportional rescaling places it nowhere near any parcel's stylized
+    // position (parcels never range further than `extent` from the anchor).
+    const FAR = DISTRICT_FOOTPRINT_TILES * 50;
+    const farCut: District = {
+      ...base,
+      cuts: [{ ax: ANCHOR.x + FAR, ay: ANCHOR.y + FAR, bx: ANCHOR.x + FAR, by: ANCHOR.y + FAR, strength: TRACK_CUT_STRENGTH }],
+    };
+    expect(districtHealth(farCut)).toBe(districtHealth(base)); // severancePenalty clamped to 0
+
+    const cutScene = generateDistrictScene(7, farCut, ANCHOR);
+    expect(cutScene).toEqual(uncutScene);
   });
 });

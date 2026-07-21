@@ -405,16 +405,95 @@ export const HEALTH_WEIGHTS = {
 } as const;
 
 /**
- * District health (KTD4, R6): the weighted mean of the four generators.
- * Always in [0, 1] since every input generator is and the weights sum to 1.
+ * Jacobs health (milestone 4's KTD4, R6; renamed from `districtHealth` in
+ * milestone 5 U4, KTD6): the weighted mean of the four generators alone,
+ * with no opinion about severance. Always in [0, 1] since every input
+ * generator is and the weights sum to 1.
+ *
+ * Milestone 5 U4 (KTD6): this is milestone 4's entire `districtHealth`
+ * function, renamed — its body is unchanged. `districtHealth` (below) now
+ * names the *composed* quantity (`jacobsHealth × (1 − severancePenalty)`);
+ * every milestone-4 caller that wants the four-generator mean alone
+ * (untouched by severance) should call `jacobsHealth` directly instead.
  */
-export function districtHealth(district: District): number {
+export function jacobsHealth(district: District): number {
   return (
     HEALTH_WEIGHTS.useMix * useMix(district) +
     HEALTH_WEIGHTS.blockGranularity * blockGranularity(district) +
     HEALTH_WEIGHTS.ageVariety * ageVariety(district) +
     HEALTH_WEIGHTS.density * densityScore(district)
   );
+}
+
+// --- Severance (milestone 5 U4, R7/R8/R9/R10, KTD5/KTD6) -------------------
+
+/** Severance penalty is squashed toward this ceiling, strictly below 1
+ *  (KTD6) — however many or however strong a district's cuts, its health is
+ *  damaged, never zeroed. A cut district still has *some* traffic value;
+ *  the story is decline, not erasure. */
+export const SEVERANCE_PENALTY_MAX = 0.6;
+
+/** Saturation rate of the penalty curve against summed cut contribution
+ *  (KTD5) — tuned so a single track-strength cut through a district's
+ *  center produces a modest, legible penalty, and a handful of crossings
+ *  saturate well short of `SEVERANCE_PENALTY_MAX`. */
+export const SEVERANCE_K = 0.15;
+
+/** A degenerate (station-footprint) chord has zero geometric length
+ *  (`ax === bx`, `ay === by`) but is still a real severance source (R7: "a
+ *  station, its yards") — treated as this many tiles of effective length
+ *  (KTD5) so it contributes on the same footing as a short track segment,
+ *  rather than vanishing from the penalty sum entirely. */
+export const MIN_CUT_LENGTH = 1;
+
+/**
+ * One cut's contribution to `district`'s severance penalty (KTD5):
+ * `strength × length × centrality`. `length` is the chord's world-tile
+ * length, floored at `MIN_CUT_LENGTH` for degenerate (point) chords.
+ * `centrality` is a linear falloff from 1 (a chord through the anchor) to 0
+ * (a chord at the district's footprint edge, `DISTRICT_FOOTPRINT_TILES`
+ * away) — this is what makes R10 a numeric property of geometry: the same
+ * chord, closer to the anchor, always contributes more.
+ */
+function cutContribution(district: District, cut: Cut): number {
+  const length = Math.max(MIN_CUT_LENGTH, Math.hypot(cut.bx - cut.ax, cut.by - cut.ay));
+  const midX = (cut.ax + cut.bx) / 2;
+  const midY = (cut.ay + cut.by) / 2;
+  const distFromAnchor = Math.hypot(midX - district.anchorX, midY - district.anchorY);
+  const centrality = clamp01(1 - distFromAnchor / DISTRICT_FOOTPRINT_TILES);
+  return cut.strength * length * centrality;
+}
+
+/**
+ * Severance penalty for `district` (KTD5), in `[0, SEVERANCE_PENALTY_MAX)`.
+ * Sums every cut's `cutContribution` and squashes the total through a
+ * saturating curve (`1 - exp(-k * raw)`) scaled to `SEVERANCE_PENALTY_MAX` —
+ * monotonic in cut count and strength (more/stronger cuts never reduce the
+ * penalty), and bounded strictly below `SEVERANCE_PENALTY_MAX` (< 1, KTD6)
+ * for any finite cut list, however large. An uncut district (`cuts: []`,
+ * every district before milestone 5 and every fresh one after it) scores
+ * exactly 0 — `districtHealth` below is then byte-identical to `jacobsHealth`
+ * alone, the regression guard milestone 4's callers depend on.
+ */
+export function severancePenalty(district: District): number {
+  if (district.cuts.length === 0) return 0;
+  const raw = district.cuts.reduce((sum, c) => sum + cutContribution(district, c), 0);
+  return SEVERANCE_PENALTY_MAX * (1 - Math.exp(-SEVERANCE_K * raw));
+}
+
+/**
+ * District health (milestone 5 U4, KTD6): `jacobsHealth × (1 −
+ * severancePenalty)` — severance is a fifth, multiplicative factor on
+ * milestone 4's four-generator mean, never zeroing a district (bounded
+ * below 1 by `severancePenalty`'s own ceiling). This is the export name
+ * every milestone-4 caller (`districtTrafficMultiplier` below,
+ * `world/streets.ts`'s scene generator) already used — the definition
+ * moved, but every call site is untouched, so R9 ("severance costs the
+ * player money") needs no new plumbing: the cut flows through the exact
+ * loop the player is paid by.
+ */
+export function districtHealth(district: District): number {
+  return jacobsHealth(district) * (1 - severancePenalty(district));
 }
 
 // --- KTD5: the traffic-multiplier selector, hosted here (not in

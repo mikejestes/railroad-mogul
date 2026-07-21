@@ -7,6 +7,9 @@ import {
   ageVariety,
   densityScore,
   districtHealth,
+  jacobsHealth,
+  severancePenalty,
+  SEVERANCE_PENALTY_MAX,
   districtTrafficMultiplier,
   districtTrafficWeight,
   recordCuts,
@@ -204,7 +207,7 @@ describe('district model (M4 U1, KTD1)', () => {
     });
   });
 
-  describe('districtHealth (KTD4, R6)', () => {
+  describe('jacobsHealth (M4 KTD4, R6; renamed from districtHealth in milestone 5 U4, KTD6)', () => {
     it('stays in [0, 1] across a randomized sweep of valid records', () => {
       let seed = 12345;
       const rand = () => {
@@ -222,7 +225,7 @@ describe('district model (M4 U1, KTD1)', () => {
           firstGrowthDay: 0,
           lastGrowthDay: Math.floor(rand() * AGE_SPAN_DAYS * 2),
         };
-        const h = districtHealth(d);
+        const h = jacobsHealth(d);
         expect(h).toBeGreaterThanOrEqual(0);
         expect(h).toBeLessThanOrEqual(1);
       }
@@ -239,21 +242,35 @@ describe('district model (M4 U1, KTD1)', () => {
         firstGrowthDay: 0,
         lastGrowthDay: 10,
       };
-      const baseHealth = districtHealth(base);
+      const baseHealth = jacobsHealth(base);
 
       const betterDensity: District = { ...base, density: 0.6 };
-      expect(districtHealth(betterDensity)).toBeGreaterThan(baseHealth);
+      expect(jacobsHealth(betterDensity)).toBeGreaterThan(baseHealth);
 
       const betterGranularity: District = { ...base, episodeCount: 10 };
-      expect(districtHealth(betterGranularity)).toBeGreaterThan(baseHealth);
+      expect(jacobsHealth(betterGranularity)).toBeGreaterThan(baseHealth);
 
       const betterAge: District = { ...base, lastGrowthDay: 400 };
-      expect(districtHealth(betterAge)).toBeGreaterThan(baseHealth);
+      expect(jacobsHealth(betterAge)).toBeGreaterThan(baseHealth);
 
       // Balancing channels toward uniform, from an already-lopsided base, raises useMix.
       const lopsided: District = { ...base, residential: 0.9, commercial: 0.05, industrial: 0.05 };
       const balanced: District = { ...base, residential: 0.3, commercial: 0.3, industrial: 0.3 };
-      expect(districtHealth(balanced)).toBeGreaterThan(districtHealth(lopsided));
+      expect(jacobsHealth(balanced)).toBeGreaterThan(jacobsHealth(lopsided));
+    });
+  });
+
+  describe('districtHealth composes jacobsHealth with severance (milestone 5 U4, KTD6)', () => {
+    it('an uncut district has districtHealth exactly equal to jacobsHealth (regression guard)', () => {
+      const d: District = { ...makeDistrict('a', station()), residential: 0.4, commercial: 0.3, industrial: 0.3, density: 0.5 };
+      expect(d.cuts).toHaveLength(0);
+      expect(districtHealth(d)).toBe(jacobsHealth(d));
+    });
+
+    it('a cut district has strictly lower districtHealth than its own jacobsHealth', () => {
+      const d: District = { ...makeDistrict('a', station()), residential: 0.4, commercial: 0.3, industrial: 0.3, density: 0.5 };
+      d.cuts.push({ ax: d.anchorX, ay: d.anchorY, bx: d.anchorX, by: d.anchorY, strength: 1 });
+      expect(districtHealth(d)).toBeLessThan(jacobsHealth(d));
     });
   });
 
@@ -517,6 +534,67 @@ describe('severance records (milestone 5 U3, R7/R8/R12, KTD1/KTD7)', () => {
       return s;
     };
     expect(serialize(run())).toBe(serialize(run()));
+  });
+});
+
+describe('severancePenalty (milestone 5 U4, R7/R8/R9/R10, KTD5/KTD6)', () => {
+  function healthyBase(id: string, x: number, y: number): District {
+    const d = makeDistrict(id, { id: `${id}-stn`, x, y });
+    d.residential = 0.4;
+    d.commercial = 0.35;
+    d.industrial = 0.3;
+    d.density = 0.6;
+    d.development = 0.5;
+    d.episodeCount = EPISODE_TARGET;
+    d.firstGrowthDay = 0;
+    d.lastGrowthDay = AGE_SPAN_DAYS;
+    return d;
+  }
+
+  it('an uncut district has severancePenalty exactly 0', () => {
+    expect(severancePenalty(makeDistrict('a', station()))).toBe(0);
+  });
+
+  it('AE3 (R10 arm): the same-length cut through the anchor produces strictly more penalty than the identical-length cut at the footprint edge', () => {
+    const throughMiddle = healthyBase('mid', 0, 0);
+    throughMiddle.cuts.push({ ax: 0, ay: 0, bx: 1, by: 0, strength: TRACK_CUT_STRENGTH });
+
+    const alongEdge = healthyBase('edge', 0, 0);
+    const e = DISTRICT_FOOTPRINT_TILES;
+    alongEdge.cuts.push({ ax: e, ay: e, bx: e + 1, by: e, strength: TRACK_CUT_STRENGTH });
+
+    expect(severancePenalty(throughMiddle)).toBeGreaterThan(severancePenalty(alongEdge));
+  });
+
+  it('penalty is monotonic in cut count and strength, and bounded below SEVERANCE_PENALTY_MAX for any cut list', () => {
+    const d = makeDistrict('a', station());
+    let last = severancePenalty(d);
+    expect(last).toBe(0);
+    for (let i = 0; i < 40; i++) {
+      d.cuts.push({ ax: 5, ay: 5, bx: 5 + (i % 2), by: 5, strength: 2 });
+      const next = severancePenalty(d);
+      expect(next).toBeGreaterThanOrEqual(last);
+      expect(next).toBeLessThan(SEVERANCE_PENALTY_MAX);
+      last = next;
+    }
+  });
+
+  it('AE3 (R9 arm): a cut district generates measurably less passenger/mail traffic than the identical uncut district, through districtTrafficMultiplier', () => {
+    const uncutState = createGameState(1);
+    const city1 = makeCity('c1', 'C1', 0, 0, 1);
+    uncutState.cities.push(city1);
+    uncutState.stations.push({ id: 'uncut-stn', x: 0, y: 0, radius: 2 });
+    uncutState.districts.push(healthyBase('uncut', 0, 0));
+
+    const cutState = createGameState(1);
+    const city2 = makeCity('c2', 'C2', 0, 0, 1);
+    cutState.cities.push(city2);
+    cutState.stations.push({ id: 'cut-stn', x: 0, y: 0, radius: 2 });
+    const cutDistrict = healthyBase('cut', 0, 0);
+    cutDistrict.cuts.push({ ax: 0, ay: 0, bx: 1, by: 0, strength: TRACK_CUT_STRENGTH });
+    cutState.districts.push(cutDistrict);
+
+    expect(districtTrafficMultiplier(cutState, city2)).toBeLessThan(districtTrafficMultiplier(uncutState, city1));
   });
 });
 
