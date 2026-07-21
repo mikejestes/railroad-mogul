@@ -8,6 +8,8 @@ import { generateGame } from '../../src/world/generate.ts';
 import { serialize, SCHEMA_VERSION } from '../../src/sim/state.ts';
 import { tick } from '../../src/sim/tick.ts';
 import { GRID_HEIGHT, GRID_WIDTH, terrainAt, elevationAt } from '../../src/world/geography.ts';
+import { applyIntent } from '../../src/store/applyIntents.ts';
+import type { Intent } from '../../src/store/gameStore.ts';
 
 describe('save/load persistence', () => {
   it('round-trips to an identical state', () => {
@@ -79,12 +81,12 @@ describe('determinism, persistence, and schema migration (U7, KTD9, R9, R10)', (
     );
   });
 
-  it('a v2 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
-    expect(SCHEMA_VERSION).toBe(2);
+  it('a v3 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
+    expect(SCHEMA_VERSION).toBe(3);
     const live = generateGame(21);
     for (let i = 0; i < 12; i++) tick(live);
     const snapshot = serializeSave(live);
-    expect((JSON.parse(snapshot) as { version: number }).version).toBe(2);
+    expect((JSON.parse(snapshot) as { version: number }).version).toBe(3);
 
     for (let i = 0; i < 12; i++) tick(live);
     const liveFinal = serialize(live);
@@ -92,5 +94,53 @@ describe('determinism, persistence, and schema migration (U7, KTD9, R9, R10)', (
     const resumed = deserializeSave(snapshot);
     for (let i = 0; i < 12; i++) tick(resumed);
     expect(serialize(resumed)).toBe(liveFinal);
+  });
+
+  it('a v2 envelope throws a clear error naming both versions', () => {
+    const legacyEnvelope = JSON.stringify({ version: 2, savedAtDay: 0, state: '{}' });
+    expect(() => deserializeSave(legacyEnvelope)).toThrow(
+      `Unsupported save version 2 (expected ${SCHEMA_VERSION})`,
+    );
+  });
+});
+
+describe('route commitment persistence (milestone 3 U4, KTD10)', () => {
+  // Paris (15,12) at the canonical grid — real, non-sea coordinates
+  // (verified against seed 21's reference field) — a short survey commits
+  // at least one segment and one route without crossing sea.
+  const commitParisSpur: Intent = { kind: 'commitRoute', waypoints: [{ x: 15, y: 12 }, { x: 17, y: 12 }] };
+
+  it('a save containing committed routes and structured segments round-trips and resumes byte-identically', () => {
+    const live = generateGame(21);
+    applyIntent(live, commitParisSpur);
+    expect(live.routes.length).toBe(1);
+    expect(live.track.segments.length).toBeGreaterThan(0);
+    for (let i = 0; i < 10; i++) tick(live);
+
+    const restored = deserializeSave(serializeSave(live));
+    expect(serialize(restored)).toBe(serialize(live));
+  });
+
+  it('segments without a structure serialize with no structure key at all (no undefined in JSON)', () => {
+    const live = generateGame(21);
+    applyIntent(live, commitParisSpur);
+    const restored = JSON.parse(serialize(live)) as { track: { segments: Array<Record<string, unknown>> } };
+    for (const seg of restored.track.segments) {
+      if (!('structure' in seg)) continue; // fine: only present when a segment has one
+      expect(seg.structure).not.toBeUndefined();
+    }
+    // At least one segment from this short, flat spur has no structure —
+    // confirms the omission path is actually exercised, not just legal.
+    expect(restored.track.segments.some((seg) => !('structure' in seg))).toBe(true);
+  });
+
+  it('replaying the same intent sequence from the same seed produces byte-identical serialized state', () => {
+    const run = () => {
+      const s = generateGame(21);
+      applyIntent(s, commitParisSpur);
+      for (let i = 0; i < 8; i++) tick(s);
+      return s;
+    };
+    expect(serialize(run())).toBe(serialize(run()));
   });
 });

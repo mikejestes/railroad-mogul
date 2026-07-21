@@ -1,4 +1,5 @@
 import type { GameState } from '../sim/state.ts';
+import type { Tile } from '../sim/pathfinding.ts';
 
 /**
  * The bridge between the simulation kernel and the view layers (KTD1, KTD2).
@@ -15,7 +16,14 @@ import type { GameState } from '../sim/state.ts';
 export type Intent =
   | { kind: 'layTrack'; ax: number; ay: number; bx: number; by: number }
   | { kind: 'buildStation'; x: number; y: number; radius: number }
-  | { kind: 'buyTrain'; engineId: string; stationIds: string[] };
+  | { kind: 'buyTrain'; engineId: string; stationIds: string[] }
+  /** Commit a surveyed route (milestone 3 U4, KTD2). Carries only the
+   *  waypoint list — never the path or cost the UI's preview computed —
+   *  so `applyIntent` re-runs `surveyRoute` from these waypoints and pays
+   *  from that recomputation. This is what keeps a stale UI proposal, a
+   *  race with a concurrent state change, or a hand-crafted intent from
+   *  ever committing a route at the wrong price. */
+  | { kind: 'commitRoute'; waypoints: Tile[] };
 
 export type Listener = (state: GameState) => void;
 

@@ -1,7 +1,7 @@
 import { createRng, type RngState } from './rng.ts';
 import type { City } from './model/cities.ts';
 import type { Industry } from './model/industries.ts';
-import type { Station, TrackNetwork } from './model/track.ts';
+import type { Station, TrackNetwork, Route } from './model/track.ts';
 import type { Train } from './model/trains.ts';
 import type { RiverGraph } from '../world/rivers.ts';
 
@@ -59,11 +59,17 @@ export interface GameState {
   stations: Station[];
   /** Trains running the network (U6). */
   trains: Train[];
+  /** Committed routes (milestone 3 U4, KTD1): the player-facing record of
+   *  each surveyed-and-built line, distinct from the `TrackSegment`s it
+   *  emits into `track.segments` (the graph trains actually pathfind over). */
+  routes: Route[];
   /** Monotonic counter for player-built station ids; serialized so ids stay
    *  unique and deterministic across save/load and replay. */
   nextStationId: number;
   /** Monotonic counter for player-bought train ids (same rationale). */
   nextTrainId: number;
+  /** Monotonic counter for committed-route ids (same rationale, U4). */
+  nextRouteId: number;
   /** Calendar year the game began (U6 era progression). */
   startYear: number;
   /** Save-format version, for migrations (U11). */
@@ -73,18 +79,23 @@ export interface GameState {
 export const START_YEAR = 1830;
 
 /**
- * Save-format version (KTD9, terrain-substrate milestone U7). Bumped 1 -> 2
- * because `World.terrain` — a stored array serialized under schema 1 — was
- * removed in U3 in favor of pure field evaluation; a v1 envelope's `state`
- * JSON carries a shape `deserializeSave` can no longer interpret correctly.
- * There is no save UI, no autosave, and no load path in the running app
- * today (persistence is exercised only by tests), so writing a migrator for
- * saves that cannot exist would be speculative work — `migrate` in
- * `persistence/saveStore.ts` refuses a version mismatch outright rather than
- * attempting to upgrade it. Bump this again, and add a real migration step,
- * the next time a stored-state shape changes after a save path ships.
+ * Save-format version (KTD9, terrain-substrate milestone U7; bumped again by
+ * route-surveying milestone U4/KTD10). Bumped 1 -> 2 because `World.terrain`
+ * — a stored array serialized under schema 1 — was removed in U3 in favor of
+ * pure field evaluation; a v1 envelope's `state` JSON carries a shape
+ * `deserializeSave` can no longer interpret correctly.
+ *
+ * Bumped 2 -> 3 (KTD10) because `GameState.routes`, `nextRouteId`, and the
+ * optional `TrackSegment.structure` field (`model/track.ts`, U4) change the
+ * stored shape again. Same precedent as the 1 -> 2 bump applies unchanged:
+ * there is still no save UI, autosave, or load path in the running app
+ * (persistence is exercised only by tests), so a v2 save cannot exist in the
+ * wild to strand, and `migrate` in `persistence/saveStore.ts` refuses a
+ * version mismatch outright rather than fabricating routes/structures a v2
+ * save never had. Bump this again, and add a real migration step, the next
+ * time a stored-state shape changes after a save path ships.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export function createGameState(seed: number): GameState {
   return {
@@ -99,8 +110,10 @@ export function createGameState(seed: number): GameState {
     track: { segments: [] },
     stations: [],
     trains: [],
+    routes: [],
     nextStationId: 0,
     nextTrainId: 0,
+    nextRouteId: 0,
     startYear: START_YEAR,
     schemaVersion: SCHEMA_VERSION,
   };

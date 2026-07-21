@@ -1,9 +1,10 @@
 import type { GameState } from '../sim/state.ts';
 import type { Intent } from './gameStore.ts';
-import { layTrack, buildStation } from '../sim/model/track.ts';
+import { layTrack, buildStation, emitRoute } from '../sim/model/track.ts';
 import { availableEngines, currentYear, engineById, makeTrain } from '../sim/model/trains.ts';
 import { GOODS, type GoodId } from '../sim/model/goods.ts';
 import { addMoney } from '../sim/state.ts';
+import { surveyRoute } from '../sim/surveying.ts';
 
 const ALL_GOODS = Object.keys(GOODS) as GoodId[];
 
@@ -48,6 +49,17 @@ export function applyIntent(state: GameState, intent: Intent): void {
     case 'buyTrain':
       buyTrain(state, intent.engineId, intent.stationIds);
       break;
+    case 'commitRoute': {
+      // KTD2: re-run the same pure survey the UI previewed, from the
+      // waypoints alone — never trust a UI-supplied path or cost. A refused
+      // or unaffordable survey is a no-op (R5), so a stale/hostile intent
+      // can never build or charge anything.
+      const survey = surveyRoute(state, intent.waypoints);
+      if (!survey.ok) break;
+      if (state.moneyCents < survey.totalCents) break;
+      emitRoute(state, `route-${state.nextRouteId++}`, intent.waypoints, survey);
+      break;
+    }
     default: {
       const unhandled: never = intent;
       throw new Error(`applyIntent: unhandled intent kind: ${(unhandled as Intent).kind}`);
