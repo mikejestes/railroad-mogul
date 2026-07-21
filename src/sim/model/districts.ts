@@ -473,12 +473,23 @@ export const MIN_CUT_LENGTH = 1;
  * (a chord at the district's footprint edge, `DISTRICT_FOOTPRINT_TILES`
  * away) — this is what makes R10 a numeric property of geometry: the same
  * chord, closer to the anchor, always contributes more.
+ *
+ * `distFromAnchor` uses Chebyshev distance — the same metric
+ * `withinFootprint`/`chordCrossesFootprint` (above) use to decide whether a
+ * chord is recorded against this district at all. Mixing metrics here (this
+ * function used to fall off with Euclidean `Math.hypot`) opened a corner
+ * dead zone: a chord in the footprint's diagonal wedge can sit at Euclidean
+ * distance ≥ `DISTRICT_FOOTPRINT_TILES` while still being ≤ the radius in
+ * Chebyshev terms — membership would record the cut, but the Euclidean
+ * falloff, already clamped to 0 at that radius, credited it no penalty at
+ * all. Using the same metric both places closes that gap: a chord is never
+ * recorded without also being reachable by centrality's falloff.
  */
 function cutContribution(district: District, cut: Cut): number {
   const length = Math.max(MIN_CUT_LENGTH, Math.hypot(cut.bx - cut.ax, cut.by - cut.ay));
   const midX = (cut.ax + cut.bx) / 2;
   const midY = (cut.ay + cut.by) / 2;
-  const distFromAnchor = Math.hypot(midX - district.anchorX, midY - district.anchorY);
+  const distFromAnchor = Math.max(Math.abs(midX - district.anchorX), Math.abs(midY - district.anchorY));
   const centrality = clamp01(1 - distFromAnchor / DISTRICT_FOOTPRINT_TILES);
   return cut.strength * length * centrality;
 }
