@@ -620,3 +620,27 @@ export function districtTrafficMultiplier(state: GameState, city: City, good?: T
   const multiplier = 1 + TRAFFIC_MULTIPLIER_K * deviationSum + typeSkew;
   return Math.min(MULT_MAX, Math.max(MULT_MIN, multiplier));
 }
+
+/**
+ * Milestone 5 U2 (KTD4, R5, AE2): a city's passenger/mail traffic mix,
+ * broken out by good — `{ passengers, mail }` — rather than the single
+ * scalar `districtTrafficMultiplier` returns when `good` is omitted. Built
+ * from the same function (two calls, one per `TrafficGood`) so callers can
+ * show or apply *why* a freight town and a passenger town generate
+ * different traffic for the same goods, without duplicating the type-skew
+ * math.
+ *
+ * Hosted here (not in `src/store/selectors.ts`, where it originally lived)
+ * for the same reason `districtTrafficMultiplier` is: `production.ts` and
+ * `demand.ts` are the real per-tick callers that thread `good` through to
+ * pick up the type skew (KTD4's traffic arm, AE2), and the sim layer must
+ * never import from the store layer. `selectors.ts` re-exports this
+ * verbatim, same as `districtTrafficMultiplier`, so UI/selector callers
+ * still find it at the conventional import path.
+ */
+export function trafficMixByGood(state: GameState, city: City): Record<TrafficGood, number> {
+  return {
+    passengers: districtTrafficMultiplier(state, city, 'passengers'),
+    mail: districtTrafficMultiplier(state, city, 'mail'),
+  };
+}

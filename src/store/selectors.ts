@@ -7,8 +7,6 @@ import { findPath } from '../sim/pathfinding.ts';
 import type { Train } from '../sim/model/trains.ts';
 import type { Industry } from '../sim/model/industries.ts';
 import { OUTPUT_CAP } from '../sim/systems/production.ts';
-import type { City } from '../sim/model/cities.ts';
-import { districtTrafficMultiplier } from '../sim/model/districts.ts';
 
 /**
  * Read-model selectors shared by the map overlays (U9) and the management UI
@@ -17,29 +15,17 @@ import { districtTrafficMultiplier } from '../sim/model/districts.ts';
  * pays what it pays (R13). Pure functions of state: trivially unit-testable,
  * and the UI never touches sim internals directly.
  *
- * M4 U5 (KTD5): `districtTrafficMultiplier` is re-exported here (not defined
- * here) — it lives in `sim/model/districts.ts` because sim systems
- * (`production.ts`, `demand.ts`) call it directly and the sim layer must
- * never import from the store layer. This re-export is so UI/selector
- * callers that expect district-facing reads to live alongside the rest of
- * the read-model still find it at the conventional import path.
+ * M4 U5 (KTD5) / M5 U2 (KTD4): `districtTrafficMultiplier` and
+ * `trafficMixByGood` are re-exported here (not defined here) — they live in
+ * `sim/model/districts.ts` because sim systems (`production.ts`,
+ * `demand.ts`) call them directly (the latter threading `good` through to
+ * pick up the station-type traffic skew, AE2) and the sim layer must never
+ * import from the store layer. This re-export is so UI/selector callers
+ * that expect district-facing reads to live alongside the rest of the
+ * read-model still find them at the conventional import path.
  */
-export { districtTrafficMultiplier } from '../sim/model/districts.ts';
+export { districtTrafficMultiplier, trafficMixByGood } from '../sim/model/districts.ts';
 
-/**
- * Milestone 5 U2 (KTD4, R5, AE2): a city's passenger/mail traffic mix,
- * broken out by good — `{ passengers, mail }` — rather than the single
- * scalar `districtTrafficMultiplier` returns when `good` is omitted. Built
- * from the same function (two calls, one per `TrafficGood`) so the map/UI
- * can show *why* a freight town and a passenger town pay differently for
- * the same goods, without duplicating the type-skew math here.
- */
-export function trafficMixByGood(state: GameState, city: City) {
-  return {
-    passengers: districtTrafficMultiplier(state, city, 'passengers'),
-    mail: districtTrafficMultiplier(state, city, 'mail'),
-  };
-}
 export interface DemandRow {
   good: GoodId;
   name: string;
