@@ -57,15 +57,19 @@ export function deserializeSave(json: string): GameState {
  * upgrade — safe today because no save UI, autosave, or load path exists in
  * the running app, so no v1 save can exist in the wild to strand.
  *
- * v2 -> v3 (KTD10, route-surveying milestone U4): schema 3 adds
- * `GameState.routes`, `nextRouteId`, and the optional
- * `TrackSegment.structure` field (`model/track.ts`). A v2 save has no routes
- * to migrate forward and no way to retroactively decide which of its
- * hand-laid segments would have "wanted" a structure — fabricating either
- * would be the same silent-corruption failure mode the v1 -> v2 bump already
- * rejected, and the same precedent (no save UI/autosave/load path in the
- * running app, so no v2 save can exist in the wild) applies unchanged.
- * `migrate` refuses a v2 load outright, same as v1.
+ * v2 -> v3 (route-surveying milestone U4, KTD10): schema 3 adds
+ * `GameState.routes`, `nextRouteId`, and the optional `TrackSegment.structure`
+ * field (`model/track.ts`). A v2 save has no routes to migrate forward and no
+ * way to retroactively decide which hand-laid segments would have "wanted" a
+ * structure.
+ *
+ * v3 -> v4 (city-districts milestone U2, KTD11): schema 4 adds
+ * `state.districts` and `state.nextDistrictId`. There is no history to
+ * synthesize an older save's districts from — a district's channels are a
+ * readout of delivery history that was never recorded before, so fabricating
+ * one would silently invent built form the player never earned. Same
+ * rationale, and the same "safe because no save path ships yet" argument, as
+ * v1 -> v2: `migrate` refuses the mismatch rather than guessing.
  */
 function migrate(state: GameState, fromVersion: number): GameState {
   if (fromVersion === SCHEMA_VERSION) return state;

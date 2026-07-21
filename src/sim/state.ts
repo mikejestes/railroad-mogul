@@ -3,6 +3,7 @@ import type { City } from './model/cities.ts';
 import type { Industry } from './model/industries.ts';
 import type { Station, TrackNetwork, Route } from './model/track.ts';
 import type { Train } from './model/trains.ts';
+import type { District } from './model/districts.ts';
 import type { RiverGraph } from '../world/rivers.ts';
 
 /**
@@ -63,6 +64,9 @@ export interface GameState {
    *  each surveyed-and-built line, distinct from the `TrackSegment`s it
    *  emits into `track.segments` (the graph trains actually pathfind over). */
   routes: Route[];
+  /** One district per station, in creation order (M4 U2, KTD1, KTD10). A
+   *  compact aggregate per station — never individual buildings (R3). */
+  districts: District[];
   /** Monotonic counter for player-built station ids; serialized so ids stay
    *  unique and deterministic across save/load and replay. */
   nextStationId: number;
@@ -70,6 +74,10 @@ export interface GameState {
   nextTrainId: number;
   /** Monotonic counter for committed-route ids (same rationale, U4). */
   nextRouteId: number;
+  /** Monotonic counter for district ids (M4 U2, R14) — serialized so ids
+   *  stay unique and deterministic across save/load and replay, the same
+   *  discipline `nextStationId`/`nextTrainId` already follow. */
+  nextDistrictId: number;
   /** Calendar year the game began (U6 era progression). */
   startYear: number;
   /** Save-format version, for migrations (U11). */
@@ -79,23 +87,27 @@ export interface GameState {
 export const START_YEAR = 1830;
 
 /**
- * Save-format version (KTD9, terrain-substrate milestone U7; bumped again by
- * route-surveying milestone U4/KTD10). Bumped 1 -> 2 because `World.terrain`
- * — a stored array serialized under schema 1 — was removed in U3 in favor of
- * pure field evaluation; a v1 envelope's `state` JSON carries a shape
- * `deserializeSave` can no longer interpret correctly.
+ * Save-format version. Bumped 1 -> 2 because `World.terrain` — a stored array
+ * serialized under schema 1 — was removed in U3 (terrain-substrate milestone
+ * U7, KTD9) in favor of pure field evaluation; a v1 envelope's `state` JSON
+ * carries a shape `deserializeSave` can no longer interpret correctly.
  *
- * Bumped 2 -> 3 (KTD10) because `GameState.routes`, `nextRouteId`, and the
- * optional `TrackSegment.structure` field (`model/track.ts`, U4) change the
- * stored shape again. Same precedent as the 1 -> 2 bump applies unchanged:
- * there is still no save UI, autosave, or load path in the running app
- * (persistence is exercised only by tests), so a v2 save cannot exist in the
- * wild to strand, and `migrate` in `persistence/saveStore.ts` refuses a
- * version mismatch outright rather than fabricating routes/structures a v2
- * save never had. Bump this again, and add a real migration step, the next
- * time a stored-state shape changes after a save path ships.
+ * Bumped 2 -> 3 (route-surveying milestone U4, KTD10) because `GameState.routes`,
+ * `nextRouteId`, and the optional `TrackSegment.structure` field
+ * (`model/track.ts`) change the stored shape.
+ *
+ * Bumped 3 -> 4 (city-districts milestone U2, KTD11) because `state.districts`
+ * and `nextDistrictId` are new required fields a schema-3 save's `state` JSON
+ * does not carry; a district's channels are a readout of delivery history that
+ * was never recorded before, so nothing could synthesize them. Same precedent
+ * throughout: there is still no save UI, autosave, or load path in the running
+ * app (persistence is exercised only by tests), so no older save can exist in
+ * the wild to strand, and `migrate` in `persistence/saveStore.ts` refuses a
+ * version mismatch outright rather than fabricating fields an older save never
+ * had. Bump this again, and add a real migration step, the next time a
+ * stored-state shape changes after a save path ships.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export function createGameState(seed: number): GameState {
   return {
@@ -111,9 +123,11 @@ export function createGameState(seed: number): GameState {
     stations: [],
     trains: [],
     routes: [],
+    districts: [],
     nextStationId: 0,
     nextTrainId: 0,
     nextRouteId: 0,
+    nextDistrictId: 0,
     startYear: START_YEAR,
     schemaVersion: SCHEMA_VERSION,
   };

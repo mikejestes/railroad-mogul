@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyIntent } from '../../src/store/applyIntents.ts';
+import { applyIntent, ensureDistrict } from '../../src/store/applyIntents.ts';
 import { createGameState, serialize, type GameState } from '../../src/sim/state.ts';
 import { findPath } from '../../src/sim/pathfinding.ts';
 import type { Intent } from '../../src/store/gameStore.ts';
@@ -12,6 +12,7 @@ describe('applyIntent exhaustiveness (U3)', () => {
   });
 });
 
+<<<<<<< HEAD
 describe('commitRoute intent (milestone 3 U4, R4/R5/R9/R10/R12, KTD2)', () => {
   // Anchored at (17,0)..(19,0) — the same flat, real, non-sea plains run
   // (DEFAULT_TERRAIN_SEED fallback) tests/sim/track.test.ts and
@@ -80,5 +81,81 @@ describe('commitRoute intent (milestone 3 U4, R4/R5/R9/R10/R12, KTD2)', () => {
     expect(path).not.toBeNull();
     expect(path![0]).toEqual(start);
     expect(path![path!.length - 1]).toEqual(end);
+  });
+});
+
+describe('district creation on station build (M4 U2, KTD10, R1, R3, R14)', () => {
+  // A tile verified elsewhere in the suite (tests/sim/movement.test.ts) never
+  // to be sea, since terrain is real authored geography, not a stored array.
+  const OX = 17;
+  const OY = 0;
+
+  it('building a station creates exactly one district anchored at the station tile, with the next serial id', () => {
+    const state = createGameState(1);
+    state.world = { width: OX + 6, height: OY + 1 };
+    state.moneyCents = 10_000_00;
+    applyIntent(state, { kind: 'buildStation', x: OX, y: OY, radius: 1 });
+
+    expect(state.districts).toHaveLength(1);
+    const [district] = state.districts;
+    expect(district.id).toBe('dst-0');
+    expect(district.stationId).toBe(state.stations[0].id);
+    expect(district.anchorX).toBe(OX);
+    expect(district.anchorY).toBe(OY);
+    expect(state.nextDistrictId).toBe(1);
+  });
+
+  it('a failed station build (sea tile) creates no district and does not advance the district counter', () => {
+    const state = createGameState(1);
+    // Large enough world that (0, 0) is in-bounds but still open Atlantic
+    // (see movement.test.ts's LINE_OX/LINE_OY note) rather than failing the
+    // build for the unrelated reason of being out of grid bounds.
+    state.world = { width: 40, height: 28 };
+    state.moneyCents = 10_000_00;
+    applyIntent(state, { kind: 'buildStation', x: 0, y: 0, radius: 1 });
+    expect(state.stations).toHaveLength(0);
+    expect(state.districts).toHaveLength(0);
+    expect(state.nextDistrictId).toBe(0);
+  });
+
+  it('a failed station build (unaffordable) creates no district and does not advance the district counter', () => {
+    const state = createGameState(1);
+    state.world = { width: OX + 6, height: OY + 1 };
+    state.moneyCents = 0;
+    applyIntent(state, { kind: 'buildStation', x: OX, y: OY, radius: 1 });
+    expect(state.stations).toHaveLength(0);
+    expect(state.districts).toHaveLength(0);
+    expect(state.nextDistrictId).toBe(0);
+  });
+
+  it('building several stations creates a district per station with serially increasing ids', () => {
+    const state = createGameState(1);
+    state.world = { width: OX + 6, height: OY + 1 };
+    state.moneyCents = 10_000_00;
+    applyIntent(state, { kind: 'buildStation', x: OX, y: OY, radius: 1 });
+    applyIntent(state, { kind: 'buildStation', x: OX + 3, y: OY, radius: 1 });
+    expect(state.districts.map((d) => d.id)).toEqual(['dst-0', 'dst-1']);
+    expect(state.districts.map((d) => d.stationId)).toEqual(state.stations.map((s) => s.id));
+  });
+
+  it('ensureDistrict is a no-op for a station id that already has a district', () => {
+    const state = createGameState(1);
+    const station = { id: 'stn-x', x: OX, y: OY, radius: 1 };
+    ensureDistrict(state, station);
+    ensureDistrict(state, station);
+    expect(state.districts).toHaveLength(1);
+    expect(state.nextDistrictId).toBe(1);
+  });
+
+  it('two runs from the same seed and intent log produce identical district arrays by serialization', () => {
+    const run = () => {
+      const state = createGameState(9);
+      state.world = { width: OX + 6, height: OY + 1 };
+      state.moneyCents = 10_000_00;
+      applyIntent(state, { kind: 'buildStation', x: OX, y: OY, radius: 1 });
+      applyIntent(state, { kind: 'buildStation', x: OX + 3, y: OY, radius: 1 });
+      return state;
+    };
+    expect(serialize(run())).toBe(serialize(run()));
   });
 });

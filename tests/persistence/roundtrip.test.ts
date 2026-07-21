@@ -10,6 +10,7 @@ import { tick } from '../../src/sim/tick.ts';
 import { GRID_HEIGHT, GRID_WIDTH, terrainAt, elevationAt } from '../../src/world/geography.ts';
 import { applyIntent } from '../../src/store/applyIntents.ts';
 import type { Intent } from '../../src/store/gameStore.ts';
+import { generateDistrictScene } from '../../src/world/streets.ts';
 
 describe('save/load persistence', () => {
   it('round-trips to an identical state', () => {
@@ -96,7 +97,7 @@ describe('determinism, persistence, and schema migration (U7, KTD9, R9, R10)', (
     expect(serialize(resumed)).toBe(liveFinal);
   });
 
-  it('a v2 envelope throws a clear error naming both versions', () => {
+  it('an old-version envelope throws a clear error naming both versions (KTD11)', () => {
     const legacyEnvelope = JSON.stringify({ version: 2, savedAtDay: 0, state: '{}' });
     expect(() => deserializeSave(legacyEnvelope)).toThrow(
       `Unsupported save version 2 (expected ${SCHEMA_VERSION})`,
@@ -142,5 +143,42 @@ describe('route commitment persistence (milestone 3 U4, KTD10)', () => {
       return s;
     };
     expect(serialize(run())).toBe(serialize(run()));
+  });
+});
+
+describe('district persistence (M4 U2/U8, R3, R14, AE4)', () => {
+  it('districts round-trip through serialize/deserializeSave byte-identically', () => {
+    const state = generateGame(5);
+    state.moneyCents = 1_000_000_00;
+    state.world = { width: 40, height: 28 };
+    applyIntent(state, { kind: 'buildStation', x: 17, y: 0, radius: 1 });
+    for (let i = 0; i < 40; i++) tick(state);
+
+    const restored = deserializeSave(serializeSave(state));
+    expect(serialize(restored)).toBe(serialize(state));
+    expect(restored.districts).toHaveLength(state.districts.length);
+  });
+
+  it('AE4: a save serializes to the same size whether or not district scenes were generated for it', () => {
+    const before = generateGame(6);
+    before.moneyCents = 1_000_000_00;
+    before.world = { width: 40, height: 28 };
+    applyIntent(before, { kind: 'buildStation', x: 17, y: 0, radius: 1 });
+    for (let i = 0; i < 60; i++) tick(before);
+    const beforeSave = serializeSave(before);
+
+    const after = generateGame(6);
+    after.moneyCents = 1_000_000_00;
+    after.world = { width: 40, height: 28 };
+    applyIntent(after, { kind: 'buildStation', x: 17, y: 0, radius: 1 });
+    for (let i = 0; i < 60; i++) tick(after);
+    // Generate street scenes for every district between generating and
+    // saving "after" — scene generation must touch no state (R9, R11).
+    for (const district of after.districts) {
+      generateDistrictScene(after.rng.seed, district, { x: district.anchorX, y: district.anchorY });
+    }
+    const afterSave = serializeSave(after);
+
+    expect(afterSave).toBe(beforeSave);
   });
 });
