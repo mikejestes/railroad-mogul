@@ -1,8 +1,8 @@
 import type { GameState, World } from '../state.ts';
 import type { Tile } from '../pathfinding.ts';
-import { moveCostFor, terrainAt } from '../../world/geography.ts';
+import { moveCostFor, terrainAt, elevationAt } from '../../world/geography.ts';
 import { addMoney } from '../state.ts';
-import type { StepCost, TrackStructure } from './trackCost.ts';
+import { effectiveGradeFor, type StepCost, type TrackStructure } from './trackCost.ts';
 
 /**
  * Track & stations (U5). Track segments connect adjacent tiles and form the
@@ -167,13 +167,57 @@ export function citiesInCatchment(state: GameState, station: Station) {
   return state.cities.filter((c) => inCatchment(station, c.x, c.y));
 }
 
-/** Total move-cost weight of a segment, for train routing (U6). `_world` is
- *  kept as a parameter (unused) only so call sites elsewhere in the codebase
- *  that pass `state.world` need no change — terrain is looked up globally by
- *  coordinate now, not off the `World` object (see module docblock). */
+/**
+ * A built segment's effective grade (milestone 3 U5, KTD4/KTD5): raw grade
+ * from `elevationAt` at the segment's endpoints — the same derivation
+ * `trackCost.ts`'s `stepCost` uses at survey time — capped by whatever
+ * structure the segment carries via the shared `effectiveGradeFor` helper,
+ * so pricing (U2/U3) and operations (this function) can never disagree
+ * about what a structure bought. Nothing about grade is stored on the
+ * segment itself (KTD4: terrain is a function, not stored data) — only
+ * `structure` is (a player purchase), and grade is re-derived from it here
+ * every time it's needed.
+ */
+export function effectiveGrade(seg: TrackSegment): number {
+  const dist = Math.hypot(seg.ax - seg.bx, seg.ay - seg.by);
+  const rawGrade = Math.abs(elevationAt(seg.bx, seg.by) - elevationAt(seg.ax, seg.ay)) / dist;
+  return effectiveGradeFor(rawGrade, seg.structure);
+}
+
+/**
+ * Tuning constant for how sharply grade slows a segment down (U5, KTD8, R11)
+ * — the `k` in `weight = dist * terrainCost * (1 + k * effectiveGrade)`.
+ * Kept modest deliberately: real adjacent-tile grades sampled across seeds
+ * sit mostly in the 0.008-0.025 range (see `trackCost.ts`'s
+ * `MAX_UNASSISTED_GRADE` derivation), so a factor of 25 turns a step at
+ * that unassisted-grade threshold into roughly a 1.5x weight — a real,
+ * measurable slowdown (AE2) without swamping terrain cost or making steep
+ * track functionally unusable. Coupling grade to engine power was
+ * considered and deferred (KTD8) — this single multiplier is the entire
+ * operational effect grade has.
+ */
+export const GRADE_WEIGHT_FACTOR = 25;
+
+/**
+ * The `(1 + k * effectiveGrade)` multiplier `segmentWeight` applies (KTD8).
+ * Exported and parameterized (`factor` defaults to `GRADE_WEIGHT_FACTOR`)
+ * specifically so a test can pass `factor: 0` directly — a regression guard
+ * that the weight collapses to the exact pre-milestone-3 formula, without
+ * depending on finding a real segment whose grade happens to be exactly
+ * zero (real terrain offers no such guarantee).
+ */
+export function gradeWeightMultiplier(grade: number, factor: number = GRADE_WEIGHT_FACTOR): number {
+  return 1 + factor * grade;
+}
+
+/** Total move-cost weight of a segment, for train routing (U6; grade term
+ *  added U5, KTD8, R11). `_world` is kept as a parameter (unused) only so
+ *  call sites elsewhere in the codebase that pass `state.world` need no
+ *  change — terrain is looked up globally by coordinate now, not off the
+ *  `World` object (see module docblock). */
 export function segmentWeight(_world: World, seg: TrackSegment): number {
   const a = moveCostFor(terrainAt(seg.ax, seg.ay));
   const b = moveCostFor(terrainAt(seg.bx, seg.by));
   const dist = Math.hypot(seg.ax - seg.bx, seg.ay - seg.by);
-  return ((a + b) / 2) * dist;
+  return ((a + b) / 2) * dist * gradeWeightMultiplier(effectiveGrade(seg));
 }

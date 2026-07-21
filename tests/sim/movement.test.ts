@@ -110,3 +110,59 @@ describe('train movement', () => {
     expect(train.targetIndex).toBe(0); // wrapped
   });
 });
+
+describe('grade slows trains (milestone 3 U5, AE2, R11)', () => {
+  // Two real 20-tile straight lines at the DEFAULT_TERRAIN_SEED fallback
+  // (this file never calls configureTerrainSeed), same length, same
+  // topology as lineWorld above — one anchored on LINE_OX/LINE_OY (verified
+  // near-flat), one anchored at (15,10) (empirically the steepest 20-tile
+  // straight run found on this seed, avg grade ~0.020 vs ~0.014 flat).
+  // Neither anchor was chosen to guarantee an outcome beyond "real terrain,
+  // real grade difference" — the resulting tick counts are measured, not
+  // assumed.
+  function straightLine(ox: number, oy: number, len: number): GameState {
+    const s = createGameState(1);
+    s.world = { width: ox + len + 2, height: oy + 2 };
+    s.stations.push({ id: 'A', x: ox, y: oy, radius: 1 });
+    s.stations.push({ id: 'B', x: ox + len, y: oy, radius: 1 });
+    for (let x = 0; x < len; x++) {
+      s.track.segments.push({ ax: ox + x, ay: oy, bx: ox + x + 1, by: oy });
+    }
+    return s;
+  }
+
+  function ticksToTraverse(s: GameState): number {
+    const train = makeTrain('t', 'pacific', routeAB());
+    s.trains.push(train);
+    tick(s, 1, [movementSystem]); // init at A
+    departTrain(train);
+    let guard = 0;
+    while (train.atStationId !== 'B' && guard++ < 500) tick(s, 1, [movementSystem]);
+    return guard;
+  }
+
+  it('AE2: the same train with the same (empty) cargo takes measurably more ticks on the steeper of two equal-length routes', () => {
+    const flatTicks = ticksToTraverse(straightLine(LINE_OX, LINE_OY, 20));
+    const steepTicks = ticksToTraverse(straightLine(15, 10, 20));
+    expect(steepTicks).toBeGreaterThan(flatTicks);
+  });
+
+  it("findPath prefers the gentler of two routes connecting the same two points when its total weight is lower — even though it's the longer, more roundabout one", () => {
+    // A real steep direct segment (grade > MAX_UNASSISTED_GRADE) versus a
+    // 2-hop detour through a real neighbor tile whose segments are both
+    // tunneled (effectiveGrade forced to 0) — found by scanning for a case
+    // where the tunneled detour's terrain+grade total genuinely undercuts
+    // the untunneled direct segment's, so the choice is real, not assumed.
+    const s = createGameState(1);
+    s.world = { width: 40, height: 28 };
+    const A = { x: 22, y: 1 };
+    const B = { x: 23, y: 1 };
+    const M = { x: 22, y: 0 };
+    s.track.segments.push({ ax: A.x, ay: A.y, bx: B.x, by: B.y }); // direct, steep, no structure
+    s.track.segments.push({ ax: A.x, ay: A.y, bx: M.x, by: M.y, structure: 'tunnel' });
+    s.track.segments.push({ ax: M.x, ay: M.y, bx: B.x, by: B.y, structure: 'tunnel' });
+
+    const path = findPath(s, A.x, A.y, B.x, B.y);
+    expect(path).toEqual([A, M, B]);
+  });
+});
