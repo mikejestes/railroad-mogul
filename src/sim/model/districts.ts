@@ -1,7 +1,7 @@
 import type { GoodId } from './goods.ts';
 import type { City } from './cities.ts';
 import type { GameState } from '../state.ts';
-import { inCatchment } from './track.ts';
+import { inCatchment, stationTypeOf, type Station, type StationType } from './track.ts';
 
 /**
  * The district model (M4 U1, KTD1–KTD5). A district is the compact aggregate
@@ -119,6 +119,28 @@ export const GOOD_FORM_WEIGHTS: Record<
 };
 
 /**
+ * Per-station-type accrual modifiers (milestone 5 U2, KTD4): scales
+ * `GOOD_FORM_WEIGHTS` at accrual time so what a station is *for* shapes what
+ * grows around it, independently of catchment size (R5). A freight yard
+ * amplifies industrial and density accrual and damps commercial (freight
+ * doesn't build shopfronts); a passenger terminal amplifies commercial and
+ * residential (foot traffic builds both) and damps industrial slightly (a
+ * passenger station is a poor freight yard). `mixed` carries no entries —
+ * every channel falls through to the `?? 1` identity in `accrueDelivery`
+ * below — so accrual through a mixed depot is byte-identical to milestone
+ * 4's undifferentiated behavior (regression guard; the same "mixed is
+ * neutral" rule `STATION_TYPE_TRAFFIC_WEIGHTS` below follows).
+ */
+export const STATION_TYPE_MODIFIERS: Record<
+  StationType,
+  Partial<Record<'residential' | 'commercial' | 'industrial' | 'density', number>>
+> = {
+  freight: { commercial: 0.5, industrial: 1.5, density: 1.3 },
+  passenger: { residential: 1.3, commercial: 1.4, industrial: 0.6 },
+  mixed: {},
+};
+
+/**
  * Credit a district for `qty` units of `good` accepted at its station
  * (KTD3 — the caller, `unloadCargo` in `systems/delivery.ts`, is responsible
  * for only ever passing *accepted* quantities; this function itself has no
@@ -126,14 +148,36 @@ export const GOOD_FORM_WEIGHTS: Record<
  * `CHANNEL_CAP` (AE5) regardless of how far beyond it `qty` would otherwise
  * push it. Stamps `lastDeliveryDay`; does not touch `development` or growth
  * history — that is the dynamics system's job (U4).
+ *
+ * `stationType` (milestone 5 U2, KTD4) defaults to `'mixed'` — the same
+ * default `stationTypeOf` falls back to — so every pre-M5 call site
+ * (including the many existing tests that build a district without an
+ * opinion about type) accrues exactly as milestone 4 did. `GOOD_FORM_WEIGHTS`
+ * stays the base table; `STATION_TYPE_MODIFIERS` scales it per channel,
+ * never the other way around, so the two tables can be tuned independently.
  */
-export function accrueDelivery(district: District, good: GoodId, qty: number, day: number): void {
+export function accrueDelivery(
+  district: District,
+  good: GoodId,
+  qty: number,
+  day: number,
+  stationType: StationType = 'mixed',
+): void {
   if (qty <= 0) return;
   const weights = GOOD_FORM_WEIGHTS[good];
-  if (weights.residential) district.residential = clamp01(district.residential + weights.residential * qty);
-  if (weights.commercial) district.commercial = clamp01(district.commercial + weights.commercial * qty);
-  if (weights.industrial) district.industrial = clamp01(district.industrial + weights.industrial * qty);
-  if (weights.density) district.density = clamp01(district.density + weights.density * qty);
+  const modifiers = STATION_TYPE_MODIFIERS[stationType];
+  if (weights.residential) {
+    district.residential = clamp01(district.residential + weights.residential * (modifiers.residential ?? 1) * qty);
+  }
+  if (weights.commercial) {
+    district.commercial = clamp01(district.commercial + weights.commercial * (modifiers.commercial ?? 1) * qty);
+  }
+  if (weights.industrial) {
+    district.industrial = clamp01(district.industrial + weights.industrial * (modifiers.industrial ?? 1) * qty);
+  }
+  if (weights.density) {
+    district.density = clamp01(district.density + weights.density * (modifiers.density ?? 1) * qty);
+  }
   district.lastDeliveryDay = day;
 }
 
@@ -240,6 +284,34 @@ export const MULT_MAX = 2;
  *  never a debuff, or siting a station becomes locally irrational. */
 export const DEVELOPMENT_FLOOR = 0.05;
 
+/** The two goods station type skews (milestone 5 U2, KTD4). A subset of
+ *  `GoodId` — the only goods `production.ts`/`demand.ts` scale by district
+ *  health at all (`CITY_SUPPLIED_GOODS`). */
+export type TrafficGood = 'passengers' | 'mail';
+
+/**
+ * Per-type traffic-mix weights (milestone 5 U2, KTD4): skews a district's
+ * contribution to passenger/mail traffic *independently of health* — a
+ * passenger terminal contributes more passenger traffic, a freight yard
+ * more mail-and-demand-side traffic, so two districts tied on health still
+ * read differently (AE2's traffic-level arm). `mixed` is neutral (1, 1):
+ * `districtTrafficMultiplier` called with a `good` for a mixed-anchored
+ * district returns exactly what omitting `good` would (regression guard —
+ * the same "mixed is identity" rule `STATION_TYPE_MODIFIERS` above follows).
+ */
+export const STATION_TYPE_TRAFFIC_WEIGHTS: Record<StationType, Record<TrafficGood, number>> = {
+  freight: { passengers: 0.7, mail: 1.3 },
+  passenger: { passengers: 1.3, mail: 0.7 },
+  mixed: { passengers: 1, mail: 1 },
+};
+
+/** A single district's contribution weight to `good` traffic (KTD4) — the
+ *  anchoring station's type, looked up through `stationTypeOf` so an
+ *  untyped (pre-M5-fixture) station reads as neutral. */
+export function districtTrafficWeight(station: Station, good: TrafficGood): number {
+  return STATION_TYPE_TRAFFIC_WEIGHTS[stationTypeOf(station)][good];
+}
+
 /**
  * Passenger/mail traffic multiplier for `city` (KTD5). Sums each qualifying
  * district's *health deviation* from `HEALTH_NEUTRAL` — not full per-district
@@ -247,16 +319,24 @@ export const DEVELOPMENT_FLOOR = 0.05;
  * so the coefficient and clamp apply once to the combined deviation rather
  * than compounding per district. A city with no qualifying district gets
  * exactly 1 (base multiplier, zero deviation summed).
+ *
+ * Milestone 5 U2 (KTD4) adds the optional `good` parameter: when given, each
+ * qualifying district also contributes `districtTrafficWeight(station, good)
+ * - 1` — a term independent of health, so type-driven traffic differences
+ * survive even between two districts of equal health (AE2). Omitting `good`
+ * (every pre-M5 call site) is byte-identical to milestone 4's formula.
  */
-export function districtTrafficMultiplier(state: GameState, city: City): number {
+export function districtTrafficMultiplier(state: GameState, city: City, good?: TrafficGood): number {
   let deviationSum = 0;
+  let typeSkew = 0;
   for (const district of state.districts) {
     if (district.development < DEVELOPMENT_FLOOR) continue;
     const station = state.stations.find((s) => s.id === district.stationId);
     if (!station) continue;
     if (!inCatchment(station, city.x, city.y)) continue;
     deviationSum += districtHealth(district) - HEALTH_NEUTRAL;
+    if (good) typeSkew += districtTrafficWeight(station, good) - 1;
   }
-  const multiplier = 1 + TRAFFIC_MULTIPLIER_K * deviationSum;
+  const multiplier = 1 + TRAFFIC_MULTIPLIER_K * deviationSum + typeSkew;
   return Math.min(MULT_MAX, Math.max(MULT_MIN, multiplier));
 }

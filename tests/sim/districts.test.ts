@@ -8,7 +8,10 @@ import {
   densityScore,
   districtHealth,
   districtTrafficMultiplier,
+  districtTrafficWeight,
   GOOD_FORM_WEIGHTS,
+  STATION_TYPE_MODIFIERS,
+  STATION_TYPE_TRAFFIC_WEIGHTS,
   CHANNEL_CAP,
   EPISODE_TARGET,
   EPISODE_COUNT_CAP,
@@ -20,6 +23,7 @@ import {
   DEVELOPMENT_FLOOR,
   type District,
 } from '../../src/sim/model/districts.ts';
+import type { StationType } from '../../src/sim/model/track.ts';
 import {
   districtSystem,
   developmentTarget,
@@ -246,6 +250,117 @@ describe('district model (M4 U1, KTD1)', () => {
         expect(value).not.toBeUndefined();
       }
     });
+  });
+});
+
+describe('station type shapes the district (milestone 5 U2, R5, KTD4)', () => {
+  it("every station type has a modifier row, and 'mixed' is the identity (no entries)", () => {
+    const types: StationType[] = ['freight', 'passenger', 'mixed'];
+    for (const t of types) expect(STATION_TYPE_MODIFIERS[t]).toBeDefined();
+    expect(Object.keys(STATION_TYPE_MODIFIERS.mixed)).toHaveLength(0);
+  });
+
+  it("AE2 (model level): identical delivery histories through a freight yard and a passenger terminal yield different dominant channels and densities", () => {
+    const freightFed = makeDistrict('dst-f', station());
+    const passengerFed = makeDistrict('dst-p', station());
+    // Small enough qty/iteration count that neither channel saturates at
+    // CHANNEL_CAP — a difference masked by both sides clamping to 1 would
+    // prove nothing about the modifier table.
+    for (let i = 0; i < 10; i++) {
+      accrueDelivery(freightFed, 'steel', 2, i, 'freight');
+      accrueDelivery(freightFed, 'goods', 2, i, 'freight');
+      accrueDelivery(passengerFed, 'steel', 2, i, 'passenger');
+      accrueDelivery(passengerFed, 'goods', 2, i, 'passenger');
+    }
+    expect(freightFed.industrial).toBeLessThan(CHANNEL_CAP);
+    expect(passengerFed.commercial).toBeLessThan(CHANNEL_CAP);
+    // Freight amplifies industrial/density and damps commercial relative to passenger.
+    expect(freightFed.industrial).toBeGreaterThan(passengerFed.industrial);
+    expect(freightFed.density).toBeGreaterThan(passengerFed.density);
+    expect(passengerFed.commercial).toBeGreaterThan(freightFed.commercial);
+  });
+
+  it('mixed-depot accrual is byte-identical to calling accrueDelivery with no stationType at all (regression guard)', () => {
+    const withDefault = makeDistrict('dst-x', station());
+    const withMixed = makeDistrict('dst-x', station());
+    for (let i = 0; i < 20; i++) {
+      accrueDelivery(withDefault, 'steel', 4, i);
+      accrueDelivery(withMixed, 'steel', 4, i, 'mixed');
+    }
+    expect(withMixed).toEqual(withDefault);
+  });
+
+  it('a zero or negative quantity accrues nothing regardless of station type', () => {
+    const d = makeDistrict('dst-0', station());
+    accrueDelivery(d, 'food', 0, 5, 'freight');
+    accrueDelivery(d, 'food', -3, 5, 'passenger');
+    expect(d.residential).toBe(0);
+    expect(d.lastDeliveryDay).toBeNull();
+  });
+});
+
+describe('station type traffic mix (milestone 5 U2, R5, KTD4)', () => {
+  it("every station type has a traffic weight row, and 'mixed' is neutral (1, 1)", () => {
+    expect(STATION_TYPE_TRAFFIC_WEIGHTS.mixed).toEqual({ passengers: 1, mail: 1 });
+  });
+
+  it('districtTrafficWeight reads the neutral default for an untyped (pre-M5-fixture) station', () => {
+    const untyped = { id: 's', x: 0, y: 0, radius: 1 };
+    expect(districtTrafficWeight(untyped, 'passengers')).toBe(1);
+    expect(districtTrafficWeight(untyped, 'mail')).toBe(1);
+  });
+
+  function districtServing(id: string, stationId: string, x: number, y: number): District {
+    const d = makeDistrict(id, { id: stationId, x, y });
+    // Tie jacobsHealth to exactly HEALTH_NEUTRAL so the health-deviation term
+    // contributes zero and only the type skew can explain any difference.
+    d.residential = 1 / 3;
+    d.commercial = 1 / 3;
+    d.industrial = 1 / 3;
+    d.density = DENSITY_PLATEAU / 2;
+    d.development = 0.5;
+    return d;
+  }
+
+  it('AE2 (traffic level): a freight-anchored and a passenger-anchored district contribute measurably different passenger/mail generation at equal (neutral) health', () => {
+    const s = createGameState(1);
+    const city = makeCity('c', 'C', 0, 0, 1);
+    s.cities.push(city);
+    s.stations.push({ id: 'stn-f', x: 0, y: 0, radius: 2, stationType: 'freight' });
+    s.stations.push({ id: 'stn-p', x: 5, y: 5, radius: 2, stationType: 'passenger' });
+
+    const freightDistrict = districtServing('dst-f', 'stn-f', 0, 0);
+    const passengerDistrict = districtServing('dst-p', 'stn-p', 5, 5);
+    expect(districtHealth(freightDistrict)).toBeCloseTo(districtHealth(passengerDistrict), 9); // equal health
+
+    const cityAtFreight = makeCity('cf', 'CF', 0, 0, 1);
+    const cityAtPassenger = makeCity('cp', 'CP', 5, 5, 1);
+    const freightOnly = createGameState(1);
+    freightOnly.stations.push({ id: 'stn-f', x: 0, y: 0, radius: 2, stationType: 'freight' });
+    freightOnly.districts.push(freightDistrict);
+    const passengerOnly = createGameState(1);
+    passengerOnly.stations.push({ id: 'stn-p', x: 5, y: 5, radius: 2, stationType: 'passenger' });
+    passengerOnly.districts.push(passengerDistrict);
+
+    const freightPassengers = districtTrafficMultiplier(freightOnly, cityAtFreight, 'passengers');
+    const passengerPassengers = districtTrafficMultiplier(passengerOnly, cityAtPassenger, 'passengers');
+    const freightMail = districtTrafficMultiplier(freightOnly, cityAtFreight, 'mail');
+    const passengerMail = districtTrafficMultiplier(passengerOnly, cityAtPassenger, 'mail');
+
+    expect(passengerPassengers).toBeGreaterThan(freightPassengers);
+    expect(freightMail).toBeGreaterThan(passengerMail);
+  });
+
+  it("omitting `good` (every pre-M5 call site) is byte-identical to milestone 4's formula, and a mixed-anchored district's weighted call equals its unweighted call", () => {
+    const s = createGameState(1);
+    const city = makeCity('c', 'C', 0, 0, 1);
+    s.cities.push(city);
+    s.stations.push({ id: 'stn', x: 0, y: 0, radius: 2, stationType: 'mixed' });
+    s.districts.push(districtServing('dst', 'stn', 0, 0));
+
+    const unweighted = districtTrafficMultiplier(s, city);
+    expect(districtTrafficMultiplier(s, city, 'passengers')).toBe(unweighted);
+    expect(districtTrafficMultiplier(s, city, 'mail')).toBe(unweighted);
   });
 });
 

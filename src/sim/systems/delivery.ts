@@ -2,7 +2,7 @@ import type { System } from '../tick.ts';
 import type { GameState } from '../state.ts';
 import { GOODS, RECIPES, type GoodId } from '../model/goods.ts';
 import { addMoney } from '../state.ts';
-import { citiesInCatchment, industriesInCatchment, type Station } from '../model/track.ts';
+import { citiesInCatchment, industriesInCatchment, stationTypeOf, type Station } from '../model/track.ts';
 import { departTrain } from './movement.ts';
 import { engineById, totalCargo, type Train } from '../model/trains.ts';
 import { accrueDelivery } from '../model/districts.ts';
@@ -25,6 +25,11 @@ import { accrueDelivery } from '../model/districts.ts';
  * or a starved processor at its input cap) accrues nothing. This is what
  * keeps a district a readout of *useful* delivery history rather than
  * something farmable by dumping unwanted goods at a station.
+ *
+ * Milestone 5 U2 (KTD4): both `accrueDelivery` call sites in `unloadCargo`
+ * now pass `stationTypeOf(station)`, so what a station *is* — freight yard,
+ * passenger terminal, mixed depot — scales the accrual the same delivery
+ * would otherwise produce (`STATION_TYPE_MODIFIERS`, `model/districts.ts`).
  */
 export interface FeeInputs {
   good: GoodId;
@@ -106,7 +111,7 @@ function unloadCargo(state: GameState, train: Train, station: Station, day: numb
       city.backlog[car.good] = backlog - take;
       city.fulfillment[car.good] = Math.min(1, (city.fulfillment[car.good] ?? 0) + take / (demandPerDay * PRESSURE_DAYS));
       qtyLeft -= take;
-      if (district) accrueDelivery(district, car.good, take, day);
+      if (district) accrueDelivery(district, car.good, take, day, stationTypeOf(station));
     }
 
     // 2. Feed a processor that consumes this good (paid a flat bulk fee), but
@@ -130,7 +135,7 @@ function unloadCargo(state: GameState, train: Train, station: Station, day: numb
           });
           addMoney(state, feed);
           qtyLeft -= accepted;
-          if (district) accrueDelivery(district, car.good, accepted, day);
+          if (district) accrueDelivery(district, car.good, accepted, day, stationTypeOf(station));
         }
       }
     }
