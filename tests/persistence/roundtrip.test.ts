@@ -82,12 +82,12 @@ describe('determinism, persistence, and schema migration (U7, KTD9, R9, R10)', (
     );
   });
 
-  it('a v3 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
-    expect(SCHEMA_VERSION).toBe(3);
+  it('a v4 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
+    expect(SCHEMA_VERSION).toBe(4);
     const live = generateGame(21);
     for (let i = 0; i < 12; i++) tick(live);
     const snapshot = serializeSave(live);
-    expect((JSON.parse(snapshot) as { version: number }).version).toBe(3);
+    expect((JSON.parse(snapshot) as { version: number }).version).toBe(4);
 
     for (let i = 0; i < 12; i++) tick(live);
     const liveFinal = serialize(live);
