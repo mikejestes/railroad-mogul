@@ -4,8 +4,9 @@ import { Container } from 'pixi.js';
 import { App } from './ui/App.tsx';
 import type { BuildMode } from './ui/panels/BuildPanel.tsx';
 import { createMapRenderer } from './render/mapRenderer.ts';
-import { WorldRenderer } from './render/worldRenderer.ts';
+import { WorldRenderer, type SurveyOverlay } from './render/worldRenderer.ts';
 import { Camera, exceedsClickThreshold, wheelZoomFactor, worldPointToTile } from './render/camera.ts';
+import { SurveyController } from './render/surveyController.ts';
 import { generateGame } from './world/generate.ts';
 import { GameStore } from './store/gameStore.ts';
 import { applyIntent } from './store/applyIntents.ts';
@@ -35,6 +36,16 @@ import { installDebugHook } from './dev/debugHook.ts';
  * The camera is also handed to `world.render` every frame (U5) so
  * `WorldRenderer` can branch on `camera.tier` and `camera.scale` — what an
  * entity draws as changes with zoom tier, not just its size (KTD4).
+ *
+ * Milestone 3 U6 (KTD9): the old `'track'` build mode chained adjacent
+ * `layTrack` clicks directly (`lastTrackTile`, removed). Survey mode instead
+ * feeds every click and cursor position to a `SurveyController`
+ * (`render/surveyController.ts`) — boot-scope view state, never
+ * `GameState`, exactly like `Camera` — and only the `commitRoute` intent
+ * (waypoints only, KTD2) ever reaches the store. The controller's live
+ * proposal drives both the React `SurveyPanel` (via `App`'s
+ * `useSurveyProposal`) and `WorldRenderer`'s overlay layer, so the two can
+ * never show different numbers for the same proposal.
  */
 
 /** World-unit-to-pixel scale WorldRenderer draws at inside the camera-scaled
@@ -88,17 +99,24 @@ async function boot() {
 
   // Map-click building: the React BuildPanel arms a mode; clicks on the canvas
   // translate to tile coords and dispatch build intents to the store (drained
-  // in the loop below). Track mode chains adjacent clicks into segments.
+  // in the loop below). Survey mode feeds clicks/hover to `survey` instead of
+  // dispatching directly (KTD9) — see the module docblock.
   //
   // Every pointer gesture starts as a potential drag (R2): pointermove pans
   // the camera and accumulates the total screen-space distance moved; pointerup
   // only fires the build click if that distance stayed under the click
-  // threshold, so dragging the map never also lays track or drops a station.
+  // threshold, so dragging the map never also surveys a waypoint or drops a
+  // station.
   let buildMode: BuildMode = 'none';
-  let lastTrackTile: { x: number; y: number } | null = null;
+  const survey = new SurveyController();
   const canvas = renderer.app.canvas as HTMLCanvasElement;
   let lastPointer = { x: 0, y: 0 };
   let dragTotal = { dx: 0, dy: 0 };
+  const tileAt = (clientX: number, clientY: number) => {
+    const rect = canvas.getBoundingClientRect();
+    const screenPoint = { x: clientX - rect.left, y: clientY - rect.top };
+    return worldPointToTile(camera.screenToWorld(screenPoint.x, screenPoint.y), state.world);
+  };
   canvas.addEventListener('pointerdown', (e) => {
     lastPointer = { x: e.clientX, y: e.clientY };
     dragTotal = { dx: 0, dy: 0 };
@@ -112,20 +130,28 @@ async function boot() {
     dragTotal = { dx: dragTotal.dx + dx, dy: dragTotal.dy + dy };
     camera.panBy(dx, dy);
   });
+  // Hover tracking for the live survey proposal (KTD3: "cursor moves — live
+  // A* to cursor tile") — deliberately not gated on pointer capture, unlike
+  // the panning handler above, since hovering (not dragging) is exactly when
+  // this should fire.
+  canvas.addEventListener('pointermove', (e) => {
+    if (buildMode !== 'survey') return;
+    survey.hover(tileAt(e.clientX, e.clientY));
+  });
   canvas.addEventListener('pointerup', (e) => {
     canvas.releasePointerCapture(e.pointerId);
     if (exceedsClickThreshold(dragTotal.dx, dragTotal.dy)) return; // was a pan, not a click
-    const rect = canvas.getBoundingClientRect();
-    const screenPoint = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    const { x, y } = worldPointToTile(camera.screenToWorld(screenPoint.x, screenPoint.y), state.world);
+    const { x, y } = tileAt(e.clientX, e.clientY);
     if (buildMode === 'station') {
       store.dispatch({ kind: 'buildStation', x, y, radius: 2 });
-    } else if (buildMode === 'track') {
-      if (lastTrackTile) {
-        store.dispatch({ kind: 'layTrack', ax: lastTrackTile.x, ay: lastTrackTile.y, bx: x, by: y });
-      }
-      lastTrackTile = { x, y };
+    } else if (buildMode === 'survey') {
+      survey.click({ x, y });
     }
+  });
+  // Esc cancels a pending survey (the state diagram's Proposing -> Idle),
+  // matching the panel's own Cancel button.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') survey.reset();
   });
 
   // Cursor-anchored wheel zoom (R3/R4, U2): the world point under the cursor
@@ -143,6 +169,18 @@ async function boot() {
     { passive: false },
   );
 
+  // Commit dispatches the intent by value (KTD2: waypoints only, the sim
+  // re-surveys) and always clears the overlay, whether or not the proposal
+  // was actually buildable at commit time — the panel already reflects the
+  // sim's own refusal, so there is nothing left pending either way.
+  const commitSurvey = () => {
+    const proposal = survey.proposalFor(store.getState());
+    if (proposal?.result.ok) {
+      store.dispatch({ kind: 'commitRoute', waypoints: proposal.waypoints });
+    }
+    survey.reset();
+  };
+
   createRoot(uiHost).render(
     createElement(
       StrictMode,
@@ -150,11 +188,14 @@ async function boot() {
       createElement(App, {
         store,
         clock,
+        survey,
         onBuildModeChange: (mode: BuildMode) => {
           buildMode = mode;
-          lastTrackTile = null; // reset the track chain when the mode changes
+          survey.reset(); // any mode change clears any pending survey/overlay (both directions)
           canvas.style.cursor = mode === 'none' ? 'default' : 'crosshair';
         },
+        onSurveyCommit: commitSurvey,
+        onSurveyCancel: () => survey.reset(),
       }),
     ),
   );
@@ -165,14 +206,21 @@ async function boot() {
   // never GameState, so this cannot affect determinism).
   if (import.meta.env.DEV) installDebugHook(store, clock, seed, camera);
 
-  // Game loop: drain intents, advance the clock, redraw overlays.
+  // Game loop: drain intents, advance the clock, redraw overlays. Re-reading
+  // the survey proposal every frame (not just on click/hover) is what keeps
+  // its price from going stale against sim state it doesn't otherwise
+  // observe (KTD2's preview honesty) — cheap A* (KTD3) makes this affordable
+  // even though it only matters while a survey is actually pending.
   let last = performance.now();
   const frame = (now: number) => {
     const dt = now - last;
     last = now;
     for (const intent of store.drainIntents()) applyIntent(store.getState(), intent);
     clock.advance(dt);
-    world.render(store.getState(), camera);
+    const proposal = survey.active ? survey.proposalFor(store.getState()) : null;
+    const overlay: SurveyOverlay | undefined =
+      proposal?.result.ok ? { path: proposal.result.path, steps: proposal.result.steps } : undefined;
+    world.render(store.getState(), camera, overlay);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);

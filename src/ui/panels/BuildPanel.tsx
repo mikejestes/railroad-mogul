@@ -1,10 +1,13 @@
-export type BuildMode = 'none' | 'track' | 'station' | 'train';
+export type BuildMode = 'none' | 'survey' | 'station' | 'train';
 
 /**
- * Build-mode toggle (U5). Thin view over the store: choosing a mode arms the
- * map surface (U5 render) to translate clicks into layTrack / buildStation
- * intents. Kept deliberately minimal — the build logic and validation live in
- * the sim model (`track.ts`), not here.
+ * Build-mode toggle (U5; 'track' renamed to 'survey' in milestone 3 U6).
+ * Thin view over the store: choosing a mode arms the map surface to
+ * translate clicks into build intents. Survey mode replaces the old
+ * click-chained `layTrack` interaction (R1-R4): clicks feed a
+ * `SurveyController` instead of dispatching track segments directly — see
+ * `main.ts` and `SurveyPanel.tsx`. Kept deliberately minimal — the build
+ * logic and validation live in the sim model, not here.
  */
 export function BuildPanel({
   mode,
@@ -31,7 +34,7 @@ export function BuildPanel({
 
   return (
     <div style={{ display: 'flex', gap: 6 }}>
-      {button('track', 'Lay Track')}
+      {button('survey', 'Survey Route')}
       {button('station', 'Build Station')}
       {button('train', 'Buy Train')}
     </div>
