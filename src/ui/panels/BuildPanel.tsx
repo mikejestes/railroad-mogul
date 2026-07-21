@@ -1,6 +1,6 @@
 import type { StationType } from '../../sim/model/track.ts';
 
-export type BuildMode = 'none' | 'survey' | 'station' | 'train' | 'move';
+export type BuildMode = 'none' | 'survey' | 'station' | 'train' | 'move' | 'land';
 
 /** The three station types a picker offers, in the order they're shown
  *  (milestone 5 U1, R4). `'mixed'` is listed first — it's the default the
@@ -30,17 +30,26 @@ export const STATION_TYPE_OPTIONS: { value: StationType; label: string }[] = [
  * a station, then click its new site) is boot-scope interaction state that
  * lives in `main.ts`, the same way survey mode's pending waypoints do; this
  * panel only arms the mode and shows a static instruction while it's active.
+ *
+ * Milestone 6 U6 (R7, KTD10): 'land' arms the buy-mode value overlay —
+ * `main.ts` tints the map by `purchasePrice` while it's active and turns a
+ * click into a `buyLand` intent for the parcel under the cursor. `message`
+ * surfaces the legible refusal `main.ts` computes at click time (AE3 at the
+ * UI level) — no message, no instruction line, the same conditional-render
+ * shape 'move' already uses.
  */
 export function BuildPanel({
   mode,
   onModeChange,
   stationType,
   onStationTypeChange,
+  landMessage,
 }: {
   mode: BuildMode;
   onModeChange: (m: BuildMode) => void;
   stationType: StationType;
   onStationTypeChange: (t: StationType) => void;
+  landMessage?: string | null;
 }) {
   const button = (m: BuildMode, label: string) => (
     <button
@@ -64,9 +73,15 @@ export function BuildPanel({
       {button('station', 'Build Station')}
       {button('move', 'Move Station')}
       {button('train', 'Buy Train')}
+      {button('land', 'Buy Land')}
       {mode === 'move' && (
         <span style={{ color: '#e0e1dd', fontSize: 12, opacity: 0.85 }}>
           Click a station, then click its new site (full price, no refund).
+        </span>
+      )}
+      {mode === 'land' && (
+        <span style={{ color: '#e0e1dd', fontSize: 12, opacity: 0.85 }}>
+          {landMessage ?? 'Click a tinted parcel to buy it at the price shown.'}
         </span>
       )}
       {mode === 'station' && (

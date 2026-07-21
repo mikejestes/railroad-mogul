@@ -14,6 +14,14 @@ import type { StepCost, TrackStructure } from '../../sim/model/trackCost.ts';
  * `structureBreakdown` are the pure content logic that carries the
  * coverage (`tests/ui/panels.test.ts`), matching the same split
  * `worldRenderer.ts`'s pure predicates already use.
+ *
+ * Milestone 6 (KTD1, R5): `onCharter` is an optional third action alongside
+ * Commit/Cancel — "committing to a route" now has two forms (build it now,
+ * or charter it: pay a fee, get corridor rights, build later within the
+ * window). The button only appears when the proposal is buildable, the same
+ * gate Commit already has; `main.ts` dispatches the exact `charterRoute`
+ * intent, re-running the same survey (KTD2 of milestone 3) `applyIntent`
+ * already re-runs for `commitRoute`.
  */
 
 const REFUSAL_MESSAGES: Record<SurveyRefusalReason, string> = {
@@ -93,10 +101,12 @@ export function SurveyPanel({
   proposal,
   onCommit,
   onCancel,
+  onCharter,
 }: {
   proposal: SurveyProposal | null;
   onCommit: () => void;
   onCancel: () => void;
+  onCharter?: () => void;
 }) {
   if (!proposal) return null;
 
@@ -160,8 +170,9 @@ export function SurveyPanel({
         <span>{formatCents(totals.totalCents)}</span>
       </div>
       <div style={{ opacity: 0.8, marginTop: 4 }}>Max grade {(result.maxGrade * 100).toFixed(1)}%</div>
-      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+      <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
         {button('Commit', onCommit, true)}
+        {onCharter && button('Charter (pay ahead)', onCharter, false)}
         {button('Cancel', onCancel, false)}
       </div>
     </div>

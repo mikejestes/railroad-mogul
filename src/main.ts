@@ -4,7 +4,7 @@ import { Container } from 'pixi.js';
 import { App } from './ui/App.tsx';
 import type { BuildMode } from './ui/panels/BuildPanel.tsx';
 import { createMapRenderer } from './render/mapRenderer.ts';
-import { WorldRenderer, type SurveyOverlay } from './render/worldRenderer.ts';
+import { WorldRenderer, type SurveyOverlay, type LandOverlay } from './render/worldRenderer.ts';
 import { Camera, exceedsClickThreshold, wheelZoomFactor, worldPointToTile } from './render/camera.ts';
 import { SurveyController } from './render/surveyController.ts';
 import { generateGame } from './world/generate.ts';
@@ -13,6 +13,8 @@ import { applyIntent } from './store/applyIntents.ts';
 import { GameClock } from './sim/clock.ts';
 import { installDebugHook } from './dev/debugHook.ts';
 import { DEFAULT_STATION_TYPE, type StationType } from './sim/model/track.ts';
+import { addressAt, canAcquire, purchasePrice, parcelCenter, PARCELS_PER_TILE_EDGE, type AcquireRefusal } from './sim/model/land.ts';
+import type { GameState } from './sim/state.ts';
 
 /**
  * Entry point. Wires the whole game together (U10/U12, camera U1):
@@ -52,6 +54,54 @@ import { DEFAULT_STATION_TYPE, type StationType } from './sim/model/track.ts';
 /** World-unit-to-pixel scale WorldRenderer draws at inside the camera-scaled
  * world container: 1, since the camera's own scale supplies the pixel size. */
 const WORLD_UNIT_PX = 1;
+
+/** Legible refusal text per `AcquireRefusal` reason (AE3 at the UI level,
+ *  milestone 6 U6, KTD10) — every reason in the closed union
+ *  (`sim/model/land.ts`) maps to a distinct, non-empty message. */
+const LAND_REFUSAL_MESSAGES: Record<AcquireRefusal, string> = {
+  'no-rights': "No acquisition rights here — outside every built station's catchment and every live charter's corridor.",
+  'already-owned': 'This parcel is already owned.',
+};
+
+/** Above this many parcel cells, the buy-mode overlay skips drawing entirely
+ *  (milestone 6 U6) — parcel-level tinting only reads at a close-in zoom
+ *  (the plan's own Assumptions: "parcel-level at street tier"); at a wide
+ *  view the candidate cell count balloons and the tint would be illegible
+ *  clutter anyway. */
+const LAND_OVERLAY_MAX_CELLS = 4000;
+
+/** Build the buy-mode value overlay (milestone 6 U6, KTD10): one cell per
+ *  ownership parcel in the camera's visible world rect, tinted by the exact
+ *  `purchasePrice` `buyLand` charges — never a parallel formula. Returns an
+ *  empty overlay when the visible rect would produce more than
+ *  `LAND_OVERLAY_MAX_CELLS` cells (see that constant) or falls entirely
+ *  outside the world bounds. */
+function computeLandOverlay(state: GameState, camera: Camera): LandOverlay {
+  const rect = camera.visibleWorldRect();
+  const minX = Math.max(0, Math.floor(rect.x));
+  const minY = Math.max(0, Math.floor(rect.y));
+  const maxX = Math.min(state.world.width, Math.ceil(rect.x + rect.width));
+  const maxY = Math.min(state.world.height, Math.ceil(rect.y + rect.height));
+  const tilesX = maxX - minX;
+  const tilesY = maxY - minY;
+  if (tilesX <= 0 || tilesY <= 0) return { cells: [] };
+  if (tilesX * tilesY * PARCELS_PER_TILE_EDGE * PARCELS_PER_TILE_EDGE > LAND_OVERLAY_MAX_CELLS) return { cells: [] };
+
+  const size = 1 / PARCELS_PER_TILE_EDGE;
+  const cells: LandOverlay['cells'] = [];
+  for (let tileX = minX; tileX < maxX; tileX++) {
+    for (let tileY = minY; tileY < maxY; tileY++) {
+      for (let subX = 0; subX < PARCELS_PER_TILE_EDGE; subX++) {
+        for (let subY = 0; subY < PARCELS_PER_TILE_EDGE; subY++) {
+          const address = { tileX, tileY, subX, subY };
+          const center = parcelCenter(address);
+          cells.push({ x: center.x - size / 2, y: center.y - size / 2, size, cents: purchasePrice(state, address) });
+        }
+      }
+    }
+  }
+  return { cells };
+}
 
 async function boot() {
   const canvasHost = document.getElementById('map-canvas');
@@ -118,15 +168,21 @@ async function boot() {
   // above, cleared on any mode change (`onBuildModeChange` below) the same
   // way a pending survey is.
   let selectedStationForMove: string | null = null;
+  // Milestone 6 U6 (KTD10): the legible buy-mode refusal (AE3) the most
+  // recent land-mode click computed — a stable-reference "box" App reads
+  // fresh on every one of its own re-renders (see App.tsx's docblock for why
+  // a plain prop can't carry a value that changes after boot).
+  const landMessageBox: { current: string | null } = { current: null };
   const survey = new SurveyController();
   const canvas = renderer.app.canvas as HTMLCanvasElement;
   let lastPointer = { x: 0, y: 0 };
   let dragTotal = { dx: 0, dy: 0 };
-  const tileAt = (clientX: number, clientY: number) => {
+  const worldPointAt = (clientX: number, clientY: number) => {
     const rect = canvas.getBoundingClientRect();
     const screenPoint = { x: clientX - rect.left, y: clientY - rect.top };
-    return worldPointToTile(camera.screenToWorld(screenPoint.x, screenPoint.y), state.world);
+    return camera.screenToWorld(screenPoint.x, screenPoint.y);
   };
+  const tileAt = (clientX: number, clientY: number) => worldPointToTile(worldPointAt(clientX, clientY), state.world);
   canvas.addEventListener('pointerdown', (e) => {
     lastPointer = { x: e.clientX, y: e.clientY };
     dragTotal = { dx: 0, dy: 0 };
@@ -167,6 +223,27 @@ async function boot() {
         store.dispatch({ kind: 'moveStation', stationId: selectedStationForMove, x, y });
         selectedStationForMove = null;
       }
+    } else if (buildMode === 'land') {
+      // Milestone 6 U6 (KTD10): resolve the exact sub-tile parcel under the
+      // cursor from the un-floored world point (not the tile-floored `x`/`y`
+      // above), then preview the refusal against the *current* live state —
+      // the same state the queued `buyLand` intent applies against a moment
+      // later, so the preview and the actual result can never disagree
+      // (KTD2's preview-honesty precedent, `commitSurvey` below).
+      const worldPoint = worldPointAt(e.clientX, e.clientY);
+      const address = addressAt(worldPoint.x, worldPoint.y);
+      const s = store.getState();
+      const ownedAddresses = s.parcels.map((p) => p.address);
+      const corridors = s.charters.filter((c) => c.status === 'live').map((c) => c.path);
+      const refusal = canAcquire(s, address, ownedAddresses, corridors);
+      if (refusal) {
+        landMessageBox.current = LAND_REFUSAL_MESSAGES[refusal];
+      } else if (s.moneyCents < purchasePrice(s, address)) {
+        landMessageBox.current = 'Not enough cash for this parcel.';
+      } else {
+        landMessageBox.current = null;
+      }
+      store.dispatch({ kind: 'buyLand', address });
     }
   });
   // Esc cancels a pending survey (the state diagram's Proposing -> Idle),
@@ -202,6 +279,19 @@ async function boot() {
     survey.reset();
   };
 
+  // Charter dispatches the same waypoints as a `charterRoute` intent instead
+  // of `commitRoute` (milestone 6, KTD1) — the sim re-surveys and re-derives
+  // the fee from them (`sim/model/land.ts`'s `charterRoute`), never trusting
+  // this proposal's own numbers. Also always clears the overlay, same
+  // rationale as `commitSurvey`.
+  const charterSurvey = () => {
+    const proposal = survey.proposalFor(store.getState());
+    if (proposal?.result.ok) {
+      store.dispatch({ kind: 'charterRoute', waypoints: proposal.waypoints });
+    }
+    survey.reset();
+  };
+
   createRoot(uiHost).render(
     createElement(
       StrictMode,
@@ -210,10 +300,12 @@ async function boot() {
         store,
         clock,
         survey,
+        landMessageBox,
         onBuildModeChange: (mode: BuildMode) => {
           buildMode = mode;
           survey.reset(); // any mode change clears any pending survey/overlay (both directions)
           selectedStationForMove = null; // any mode change clears a pending move selection too
+          landMessageBox.current = null; // any mode change clears a pending buy-mode refusal too
           canvas.style.cursor = mode === 'none' ? 'default' : 'crosshair';
         },
         onStationTypeChange: (t: StationType) => {
@@ -221,6 +313,7 @@ async function boot() {
         },
         onSurveyCommit: commitSurvey,
         onSurveyCancel: () => survey.reset(),
+        onSurveyCharter: charterSurvey,
       }),
     ),
   );
@@ -245,7 +338,12 @@ async function boot() {
     const proposal = survey.active ? survey.proposalFor(store.getState()) : null;
     const overlay: SurveyOverlay | undefined =
       proposal?.result.ok ? { path: proposal.result.path, steps: proposal.result.steps } : undefined;
-    world.render(store.getState(), camera, overlay);
+    // Milestone 6 U6 (KTD10): the buy-mode value overlay, recomputed every
+    // frame like the survey overlay above — cheap enough (bounded cell
+    // count, `LAND_OVERLAY_MAX_CELLS`) and it keeps the tint from going
+    // stale against sim state it doesn't otherwise observe.
+    const landOverlay: LandOverlay | undefined = buildMode === 'land' ? computeLandOverlay(store.getState(), camera) : undefined;
+    world.render(store.getState(), camera, overlay, landOverlay);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
