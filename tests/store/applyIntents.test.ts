@@ -4,7 +4,7 @@ import { createGameState, serialize, type GameState } from '../../src/sim/state.
 import { findPath } from '../../src/sim/pathfinding.ts';
 import type { Intent } from '../../src/store/gameStore.ts';
 import { STATION_COST } from '../../src/sim/model/track.ts';
-import { DISTRICT_FOOTPRINT_TILES, accrueDelivery, jacobsHealth } from '../../src/sim/model/districts.ts';
+import { DISTRICT_FOOTPRINT_TILES, accrueDelivery, jacobsHealth, activeDistrictFor } from '../../src/sim/model/districts.ts';
 
 describe('applyIntent exhaustiveness (U3)', () => {
   it('throws rather than silently doing nothing on an unrecognized intent kind', () => {
@@ -186,6 +186,53 @@ describe('moveStation intent (milestone 5 U7, R11/R12/R13/R14, KTD8)', () => {
     expect(state.districts).toHaveLength(1);
     expect(state.stations[0].x).toBe(OX + 3);
     expect(state.districts[0].stationId).toBe(station.id);
+  });
+
+  it('FIX regression: TWO successive within-footprint moves stay served by the same single district, with development preserved (AE5/R14)', () => {
+    const state = buildableWorld();
+    applyIntent(state, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+    const stationId = state.stations[0].id;
+    const district = state.districts[0];
+    for (let i = 0; i < 30; i++) accrueDelivery(district, 'steel', 3, i);
+    district.development = 0.6;
+    const developmentBefore = district.development;
+    const residentialBefore = district.residential;
+
+    // First move: within the original footprint (anchor OX,OY; footprint
+    // radius DISTRICT_FOOTPRINT_TILES) — no new district (already covered
+    // above). This used to work even with the buggy anchor-equality lookup,
+    // since the station had never moved before this call.
+    applyIntent(state, { kind: 'moveStation', stationId, x: OX + 3, y: OY });
+    expect(state.districts).toHaveLength(1);
+
+    // Second move: still within the ORIGINAL district's footprint, but the
+    // station's tile (OX+3, OY) no longer equals the district's anchor
+    // (OX, OY) — the exact bug this test guards against. A raw
+    // anchor-equality lookup against the station's *current* tile would
+    // find no match here, wrongly minting a spurious dst-1 and orphaning
+    // the real, developed district.
+    applyIntent(state, { kind: 'moveStation', stationId, x: OX + 5, y: OY });
+
+    expect(state.districts).toHaveLength(1); // still exactly one district
+    expect(state.districts[0].id).toBe(district.id); // the same original record
+    expect(state.districts[0].development).toBe(developmentBefore); // preserved
+    expect(state.districts[0].residential).toBe(residentialBefore); // preserved
+    expect(state.stations[0].x).toBe(OX + 5);
+  });
+
+  it('FIX regression: activeDistrictFor still returns the developed district after two within-footprint moves', () => {
+    const state = buildableWorld();
+    applyIntent(state, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+    const stationId = state.stations[0].id;
+    state.districts[0].development = 0.5;
+
+    applyIntent(state, { kind: 'moveStation', stationId, x: OX + 3, y: OY });
+    applyIntent(state, { kind: 'moveStation', stationId, x: OX + 5, y: OY });
+
+    const active = activeDistrictFor(state, stationId);
+    expect(active).toBeDefined();
+    expect(active!.id).toBe(state.districts[0].id);
+    expect(active!.development).toBe(0.5);
   });
 
   it('AE5: a developed district whose station moves within the footprint keeps its channels/development/growth history intact (jacobsHealth unchanged)', () => {

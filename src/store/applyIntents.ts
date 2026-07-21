@@ -10,6 +10,7 @@ import {
   recordCuts,
   TRACK_CUT_STRENGTH,
   DISTRICT_FOOTPRINT_TILES,
+  activeDistrictFor,
   type Cut,
 } from '../sim/model/districts.ts';
 
@@ -130,16 +131,24 @@ export function applyIntent(state: GameState, intent: Intent): void {
       break;
     }
     case 'moveStation': {
-      // KTD8's flow diagram: capture the station's *pre-move* district
-      // (matched by id AND its current-at-this-moment anchor, so a station
-      // that already relocated once and picked up a second district only
-      // matches the one it's actually leaving) before `moveStation` mutates
-      // the station's position out from under that lookup.
+      // KTD8's flow diagram: capture the district *currently serving* this
+      // station before `moveStation` mutates its position. This is
+      // deliberately NOT a raw anchor-equality match against the station's
+      // current tile — a district's anchor is fixed at creation (KTD1), and
+      // a within-footprint move (R14) never mints a new one, so after even
+      // one such move the station's tile no longer equals any district's
+      // anchor. Matching by exact anchor-equality only ever worked for a
+      // station that had never moved; on a *second* move it silently missed,
+      // minting a spurious extra district and orphaning the real one. This
+      // is the same "which record is this station's activity credited to"
+      // question `activeDistrictFor` already answers for `delivery.ts` and
+      // `landValue.ts` (last-created record for the station id, since
+      // `state.districts` only ever appends) — reusing it here keeps the
+      // resolution rule one and the same everywhere, not a second, subtly
+      // different lookup just for relocation.
       const station = state.stations.find((s) => s.id === intent.stationId);
       if (!station) break;
-      const oldDistrict = state.districts.find(
-        (d) => d.stationId === station.id && d.anchorX === station.x && d.anchorY === station.y,
-      );
+      const oldDistrict = activeDistrictFor(state, station.id);
       const moved = moveStation(state, intent.stationId, intent.x, intent.y);
       if (!moved) break;
       if (oldDistrict) {
@@ -154,9 +163,9 @@ export function applyIntent(state: GameState, intent: Intent): void {
         // keyed by the station's new anchor (KTD8's narrowed idempotency).
         if (!withinFootprint) ensureDistrict(state, station);
       } else {
-        // No pre-existing district matched this station's old position
-        // (shouldn't happen in normal play — every built station gets one —
-        // but stay correct under a hand-crafted or test-fixture state).
+        // No district exists for this station id at all (shouldn't happen in
+        // normal play — every built station gets one — but stay correct
+        // under a hand-crafted or test-fixture state).
         ensureDistrict(state, station);
       }
       break;
