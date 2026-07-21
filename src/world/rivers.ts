@@ -10,16 +10,36 @@
  * flow over that fixed snapshot, and store the resulting polylines. Nothing
  * else in the terrain substrate is stored; this is kilobytes, not megabytes.
  *
+ * Milestone-3 U1 rebase (KTD7(a), R8): this module used to sample its own,
+ * independent `TerrainFields` instance at `RIVER_FIELD_SCALE`, disjoint from
+ * `geography.ts`'s per-seed-offset, authored-landmask-aware `elevationAt`/
+ * `terrainAt`. Two empirical facts (re-verified while planning milestone 3)
+ * made that untenable: without the per-seed land-median offset, a large
+ * share of seeds (5 of 12 in a spot check) produced *zero* rivers, because
+ * the raw field's DC level sat at or below sea level over the whole
+ * landmass; and on seeds that did produce rivers, the fraction of river
+ * points landing on a tile `terrainAt` calls `sea` ranged from near-zero to
+ * over 80% depending on seed — not a narrow, ignorable band. So flow routing
+ * now samples the exact same elevation source the player sees:
+ * `geography.ts`'s `elevationAt(x, y)`, tile-indexed 1:1 (no separate
+ * coarse-grid scale — the "coarse grid" *is* the tile grid now), via
+ * `configureTerrainSeed(seed)` at the top of `buildRiverGraph` so the graph
+ * stays a pure function of `(seed, gridWidth, gridHeight)` regardless of call
+ * order (`configureTerrainSeed` is idempotent per seed — see
+ * `geography.ts`). A cell counts as sea for routing purposes — `isSea`,
+ * below — if *either* `terrainAt` classifies it as sea (outside every
+ * authored landmass box, KTD5) *or* its offset elevation is at/below
+ * `SEA_LEVEL` (the field's own notion of sea, which `terrainAt` softens to
+ * `'coast'` inside authored land rather than reporting as `'sea'`): a river
+ * can end by leaving the authored continent or by reaching a genuinely
+ * low-lying point inside it, and either is a legitimate mouth.
+ *
  * Algorithm (single-flow-direction / D8, the standard coarse hydrology
  * model — no erosion, no pit-filling, per the plan's explicit scope
  * boundary):
- *   1. Sample elevation at every coarse-grid cell from a `TerrainFields`
- *      instance built from the world seed (U1's `createTerrainFields`) —
- *      grid coordinates are scaled up by `RIVER_FIELD_SCALE` before being
- *      handed to the field, for the same reason `geography.ts` scales tile
- *      coordinates: at 1:1 the field is nearly flat across a grid this
- *      small (empirically verified while tuning this unit).
- *   2. Each land cell (elevation > SEA_LEVEL) gets a flow direction toward
+ *   1. Sample offset tile elevation (`geography.ts`'s `elevationAt`) at
+ *      every grid cell.
+ *   2. Each non-sea cell (per `isSea` above) gets a flow direction toward
  *      its single lowest 8-connected neighbor, if any neighbor is lower.
  *      Cells with no lower neighbor (pits) have no flow direction. Flow
  *      always points to a strictly lower cell, so the flow graph is
@@ -52,11 +72,11 @@
  *      the assertion.
  *
  * Determinism (R10): the only randomness is the world seed feeding
- * `createTerrainFields`, which U1 already established is pure and
- * order-independent; everything downstream here is plain deterministic
- * array processing (stable-sorted by elevation, ties broken by the fixed
- * row-major scan order), so the same seed and grid dimensions always
- * produce byte-identical output.
+ * `geography.ts`'s reference fields (via `configureTerrainSeed`), which is
+ * pure and order-independent; everything downstream here is plain
+ * deterministic array processing (stable-sorted by elevation, ties broken by
+ * the fixed row-major scan order), so the same seed and grid dimensions
+ * always produce byte-identical output.
  *
  * Serialization safety (referenced in the plan via commit `36dfac7`, which
  * fixed an earlier NaN-as-JSON-sentinel bug elsewhere in this codebase):
@@ -67,25 +87,20 @@
  * legitimately needs a "no downhill neighbor" sentinel) are local to
  * `buildRiverGraph` and never escape into the stored graph.
  *
- * Known gap (documented, not fixed here — out of this unit's scope): this
- * module samples its own `TerrainFields` instance from the real per-run
- * seed, independent of `geography.ts`'s `terrainAt`, which — per U2/U3's own
- * notes — still classifies against a fixed placeholder reference seed and
- * an authored landmask this module does not consult. So a river's "sea" may
- * not land exactly on a tile `terrainAt` also calls `sea`. Reconciling the
- * two is deferred to whichever future unit wires rivers into rendering or
- * track-crossing costs (the plan's Scope Boundaries explicitly reserve both
- * for milestone 3).
+ * `riverTileKeys` (U1, KTD7(b)): the pure derivation of which tiles a
+ * surveyed route must bridge (`src/sim/model/trackCost.ts`, milestone 3 U2).
+ * A tile is a *crossable river tile* iff a river polyline passes through it
+ * and `terrainAt` classifies that tile as land — a masked-sea point is
+ * unbuildable anyway (no track can reach it to need a bridge), so it drops
+ * out rather than requiring special-casing downstream. No interpolation is
+ * needed between polyline points: D8 flow steps are 8-adjacent by
+ * construction, so every polyline already visits every tile it crosses.
+ * Memoized by `RiverGraph` object reference (a `WeakMap`) — the graph is
+ * immutable after generation, so recomputing per call would be pure waste
+ * for something every survey call needs.
  */
-import { createTerrainFields, SEA_LEVEL } from './fields.ts';
-
-/**
- * Grid coordinates are multiplied by this before sampling the elevation
- * field. Chosen empirically (see this module's docblock): at 1:1 scale a
- * grid the size of the game's tile grid samples an almost-flat slice of the
- * field, leaving nothing to route flow over.
- */
-export const RIVER_FIELD_SCALE = 48;
+import { SEA_LEVEL } from './fields.ts';
+import { configureTerrainSeed, elevationAt, terrainAt } from './geography.ts';
 
 /**
  * Minimum flow accumulation (in upstream-cell units) for a reaches-the-sea
@@ -123,22 +138,38 @@ function cellIndex(x: number, y: number, gridWidth: number): number {
 }
 
 /**
- * Build the river graph for a world (U5, R7). Pure function of `seed` and
- * the coarse grid's dimensions — see the module docblock for the algorithm
- * and the determinism argument.
+ * A cell counts as sea for flow-routing purposes if either the authored
+ * landmask says so (`terrainAt` outside every `LAND_BOXES` box) or its
+ * offset elevation is at/below `SEA_LEVEL` (see module docblock, KTD7(a)).
+ */
+function isSeaTile(x: number, y: number): boolean {
+  return terrainAt(x, y) === 'sea' || elevationAt(x, y) <= SEA_LEVEL;
+}
+
+/**
+ * Build the river graph for a world (U5, R7; rebased onto `geography.ts`'s
+ * elevation in milestone-3 U1, KTD7(a)). Pure function of `seed` and the
+ * grid's dimensions — see the module docblock for the algorithm and the
+ * determinism argument. `configureTerrainSeed(seed)` is idempotent per seed
+ * (see `geography.ts`), so calling this before or after other code that
+ * configures the same seed makes no difference.
  */
 export function buildRiverGraph(seed: number, gridWidth: number, gridHeight: number): RiverGraph {
   const cellCount = gridWidth * gridHeight;
   if (cellCount === 0) return { rivers: [] };
 
-  const fields = createTerrainFields(seed);
+  configureTerrainSeed(seed);
+
   const elevation = new Float64Array(cellCount);
+  const seaMask = new Uint8Array(cellCount);
   for (let y = 0; y < gridHeight; y++) {
     for (let x = 0; x < gridWidth; x++) {
-      elevation[cellIndex(x, y, gridWidth)] = fields.elevationAt(x * RIVER_FIELD_SCALE, y * RIVER_FIELD_SCALE);
+      const i = cellIndex(x, y, gridWidth);
+      elevation[i] = elevationAt(x, y);
+      seaMask[i] = isSeaTile(x, y) ? 1 : 0;
     }
   }
-  const isSea = (i: number): boolean => elevation[i] <= SEA_LEVEL;
+  const isSea = (i: number): boolean => seaMask[i] === 1;
 
   // Step 2: flow direction toward the single lowest 8-connected neighbor.
   // -1 means "no downhill neighbor" (sea cell, or a land pit). This
@@ -219,4 +250,32 @@ export function buildRiverGraph(seed: number, gridWidth: number, gridHeight: num
   }
 
   return { rivers };
+}
+
+/** Memoized `RiverGraph` -> crossable-river-tile-key cache (U1, KTD7(b)).
+ *  Keyed by object reference: `RiverGraph` is immutable after generation, so
+ *  the same graph instance always yields the same key set. */
+const riverTileKeysCache = new WeakMap<RiverGraph, Set<string>>();
+
+/**
+ * Every tile a route must bridge to cross a river (U1, KTD7(b)): the set of
+ * `"x,y"` keys for every point on every polyline in `graph` whose tile
+ * `terrainAt` classifies as land. A river point that lands on a
+ * `terrainAt`-sea tile (open ocean/estuary beyond the authored coastline) is
+ * unbuildable anyway, so it drops out rather than needing a bridge of its
+ * own. Pure function of `graph`'s contents; memoized by reference so a
+ * survey re-run every cursor move (KTD3) doesn't re-walk every river.
+ */
+export function riverTileKeys(graph: RiverGraph): Set<string> {
+  const cached = riverTileKeysCache.get(graph);
+  if (cached) return cached;
+
+  const keys = new Set<string>();
+  for (const river of graph.rivers) {
+    for (const p of river.points) {
+      if (terrainAt(p.x, p.y) !== 'sea') keys.add(`${p.x},${p.y}`);
+    }
+  }
+  riverTileKeysCache.set(graph, keys);
+  return keys;
 }

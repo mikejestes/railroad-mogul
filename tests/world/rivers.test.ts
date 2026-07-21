@@ -1,13 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { buildRiverGraph, RIVER_ACCUMULATION_THRESHOLD, type RiverGraph } from '../../src/world/rivers.ts';
+import { buildRiverGraph, riverTileKeys, RIVER_ACCUMULATION_THRESHOLD, type RiverGraph } from '../../src/world/rivers.ts';
 import { SEA_LEVEL } from '../../src/world/fields.ts';
+import { terrainAt } from '../../src/world/geography.ts';
 import { serialize } from '../../src/sim/state.ts';
 import { generateGame } from '../../src/world/generate.ts';
 
 // Local factory, per repo test convention. Grid dimensions mirror the real
-// game grid's shape (40x28) but are kept as local constants rather than
-// importing from geography.ts, since rivers.ts depends on U1 (fields.ts)
-// only, not on geography.ts's authored landmask.
+// game grid's shape (40x28) — kept as local constants rather than importing
+// GRID_WIDTH/GRID_HEIGHT from geography.ts, since this suite wants to control
+// its own inputs explicitly. `buildRiverGraph` depends on `geography.ts` as
+// of milestone-3 U1's rebase (KTD7(a)): the elevation it routes flow over,
+// and the authored landmask termination, both come from there now.
 const GRID_WIDTH = 40;
 const GRID_HEIGHT = 28;
 
@@ -15,13 +18,12 @@ function makeGraph(seed: number): RiverGraph {
   return buildRiverGraph(seed, GRID_WIDTH, GRID_HEIGHT);
 }
 
-// Seeds empirically verified (while tuning this unit) to produce at least
-// one river at GRID_WIDTH x GRID_HEIGHT; used wherever a test needs a
-// non-empty graph to make an assertion about. A seed producing zero rivers
-// (e.g. an all-sea or all-land world) is a legitimate degenerate case, not
-// a bug, so tests that need rivers pick seeds known to have them rather
-// than asserting every seed must produce one.
-const SEEDS_WITH_RIVERS = [7, 42, 99, 123];
+// Milestone-3 U1 (KTD7(a)) rebased river generation onto geography.ts's
+// per-seed-offset elevation specifically to fix seed 1 (and others) producing
+// zero rivers under the old, un-offset field. Seed 1 is now included
+// deliberately, alongside a spread of other seeds, as the regression guard
+// for that fix — every seed here is expected to produce at least one river.
+const SEEDS_WITH_RIVERS = [1, 7, 42, 99, 123];
 
 function collectPointKeys(graph: RiverGraph): Set<string> {
   const keys = new Set<string>();
@@ -54,7 +56,10 @@ describe('river graph (U5, KTD6)', () => {
       for (const river of graph.rivers) {
         sawAnyRiver = true;
         const last = river.points[river.points.length - 1];
-        const isSeaPoint = last.elevation <= SEA_LEVEL;
+        // A mouth can be field-sea (elevation at/below SEA_LEVEL) or
+        // authored-mask sea (outside every LAND_BOXES box, KTD7(a)) — the
+        // two termination conditions `isSeaTile` accepts internally.
+        const isSeaPoint = last.elevation <= SEA_LEVEL || terrainAt(last.x, last.y) === 'sea';
         // "Joins another river" means the terminal point also appears
         // somewhere in the graph's overall point set (a confluence claimed
         // by an earlier, higher-elevation trace) rather than dangling.
@@ -63,6 +68,16 @@ describe('river graph (U5, KTD6)', () => {
       }
     }
     expect(sawAnyRiver).toBe(true);
+  });
+
+  it('U1 (KTD7(a)): the rebased graph produces at least one river on every seed in the spread, including seed 1', () => {
+    // Seed 1 produced zero rivers under the pre-rebase, un-offset field —
+    // this is the regression guard for the fix, checked per-seed (not just
+    // "some seed somewhere") so a future regression on any one seed is caught.
+    for (const seed of SEEDS_WITH_RIVERS) {
+      const graph = makeGraph(seed);
+      expect(graph.rivers.length).toBeGreaterThan(0);
+    }
   });
 
   it('no river forms a cycle', () => {
@@ -123,5 +138,37 @@ describe('river graph (U5, KTD6)', () => {
     // this asserts the threshold is actually load-bearing (a threshold of 0
     // would make every land cell a "river").
     expect(RIVER_ACCUMULATION_THRESHOLD).toBeGreaterThan(1);
+  });
+});
+
+describe('riverTileKeys (U1, KTD7(b))', () => {
+  it('every key classifies as land under terrainAt; none classifies as sea', () => {
+    for (const seed of SEEDS_WITH_RIVERS) {
+      const graph = makeGraph(seed);
+      const keys = riverTileKeys(graph);
+      for (const key of keys) {
+        const [x, y] = key.split(',').map(Number);
+        expect(terrainAt(x, y)).not.toBe('sea');
+      }
+    }
+  });
+
+  it('the same graph reference returns the same Set instance (memoization)', () => {
+    const graph = makeGraph(7);
+    const a = riverTileKeys(graph);
+    const b = riverTileKeys(graph);
+    expect(a).toBe(b);
+  });
+
+  it('an equal-valued but distinct graph returns equal contents', () => {
+    const a = riverTileKeys(makeGraph(7));
+    const b = riverTileKeys(makeGraph(7)); // separate buildRiverGraph call -> separate object
+    expect(a).not.toBe(b);
+    expect([...a].sort()).toEqual([...b].sort());
+  });
+
+  it('an empty river graph returns an empty set', () => {
+    const empty: RiverGraph = { rivers: [] };
+    expect(riverTileKeys(empty)).toEqual(new Set());
   });
 });
