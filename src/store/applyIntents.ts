@@ -5,7 +5,7 @@ import { availableEngines, currentYear, engineById, makeTrain } from '../sim/mod
 import { GOODS, type GoodId } from '../sim/model/goods.ts';
 import { addMoney } from '../sim/state.ts';
 import { surveyRoute } from '../sim/surveying.ts';
-import { makeDistrict } from '../sim/model/districts.ts';
+import { makeDistrict, recordCuts, TRACK_CUT_STRENGTH, type Cut } from '../sim/model/districts.ts';
 
 const ALL_GOODS = Object.keys(GOODS) as GoodId[];
 
@@ -25,11 +25,34 @@ const ALL_GOODS = Object.keys(GOODS) as GoodId[];
  * anchor) once a station can move and leave its old district behind. Do not
  * add tests that treat per-station-id idempotency as load-bearing beyond
  * this milestone.
+ *
+ * Milestone 5 U3 (KTD7): a brand-new district backfills cuts from every
+ * *pre-existing* track segment that crosses its footprint — "the cut was
+ * physically there first." This routes through the same `recordCuts` helper
+ * `layTrack`/`buildStation`/`emitRoute` use (`sim/model/track.ts`), so build-
+ * time recording and creation-time backfill can never disagree about what
+ * counts as a cut. Deliberately does NOT also self-cut the new district from
+ * the station's own footprint: the anchor is the new district's dead center,
+ * so a universal self-cut there would be the worst possible centrality
+ * (KTD5, U4) for literally every station ever built, baking in a fixed
+ * penalty no siting choice could avoid — contrary to R10's "edge vs middle
+ * is a siting decision." `buildStation` (`model/track.ts`) still records the
+ * new station's footprint as a cut into any *other*, already-existing
+ * neighboring district it happens to fall inside.
  */
 export function ensureDistrict(state: GameState, station: Station): void {
   if (state.districts.some((d) => d.stationId === station.id)) return;
   const id = `dst-${state.nextDistrictId++}`;
-  state.districts.push(makeDistrict(id, station));
+  const district = makeDistrict(id, station);
+  state.districts.push(district);
+  const chords: Cut[] = state.track.segments.map((seg) => ({
+    ax: seg.ax,
+    ay: seg.ay,
+    bx: seg.bx,
+    by: seg.by,
+    strength: TRACK_CUT_STRENGTH,
+  }));
+  recordCuts([district], chords);
 }
 
 /** Create a train on a route if the engine is available, affordable, and the

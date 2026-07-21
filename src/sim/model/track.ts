@@ -3,6 +3,7 @@ import type { Tile } from '../pathfinding.ts';
 import { moveCostFor, terrainAt, elevationAt } from '../../world/geography.ts';
 import { addMoney } from '../state.ts';
 import { effectiveGradeFor, type StepCost, type TrackStructure } from './trackCost.ts';
+import { recordCuts, STATION_CUT_STRENGTH, TRACK_CUT_STRENGTH, type Cut } from './districts.ts';
 
 /**
  * Track & stations (U5). Track segments connect adjacent tiles and form the
@@ -141,7 +142,10 @@ function segmentCost(seg: TrackSegment): number {
   return cost;
 }
 
-/** Lay a track segment if legal and affordable; returns success. */
+/** Lay a track segment if legal and affordable; returns success. Milestone 5
+ *  U3 (KTD1/KTD7): appends a `TRACK_CUT_STRENGTH` cut to any district whose
+ *  footprint this segment crosses, through the one shared `recordCuts`
+ *  helper (`model/districts.ts`) every cut source routes through. */
 export function layTrack(state: GameState, ax: number, ay: number, bx: number, by: number): boolean {
   if (!canLayTrack(state, ax, ay, bx, by)) return false;
   const seg: TrackSegment = { ax, ay, bx, by };
@@ -149,6 +153,7 @@ export function layTrack(state: GameState, ax: number, ay: number, bx: number, b
   if (state.moneyCents < cost) return false;
   state.track.segments.push(seg);
   addMoney(state, -cost);
+  recordCuts(state.districts, [{ ax, ay, bx, by, strength: TRACK_CUT_STRENGTH }]);
   return true;
 }
 
@@ -184,6 +189,17 @@ export function emitRoute(
     committedDay: state.timeDays,
   });
   addMoney(state, -survey.totalCents);
+  // Milestone 5 U3 (KTD1/KTD7): every emitted segment is a cut source too —
+  // a committed route severs a district exactly as hand-laid track would,
+  // through the same shared `recordCuts` helper `layTrack` uses, so the two
+  // build paths can never disagree about what counts as a cut.
+  const chords: Cut[] = [];
+  for (let i = 0; i + 1 < survey.path.length; i++) {
+    const a = survey.path[i];
+    const b = survey.path[i + 1];
+    chords.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y, strength: TRACK_CUT_STRENGTH });
+  }
+  recordCuts(state.districts, chords);
 }
 
 /** Build a station if the tile is buildable and affordable; returns success.
@@ -203,6 +219,15 @@ export function buildStation(
   if (state.moneyCents < cost) return false;
   state.stations.push({ id, x, y, radius, stationType });
   addMoney(state, -cost);
+  // Milestone 5 U3 (KTD1): a station's own footprint is a cut source too
+  // (R7 — "a station, its yards"), a degenerate point chord (ax===bx,
+  // ay===by). This only ever lands in a *pre-existing* neighboring
+  // district's footprint — the station's own brand-new district doesn't
+  // exist yet at this call (`ensureDistrict` runs after, in
+  // `applyIntents.ts`), which is deliberate: see `ensureDistrict`'s own
+  // docblock for why a station does not self-cut its own district at its
+  // own dead-center anchor.
+  recordCuts(state.districts, [{ ax: x, ay: y, bx: x, by: y, strength: STATION_CUT_STRENGTH }]);
   return true;
 }
 

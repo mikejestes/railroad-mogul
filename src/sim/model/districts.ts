@@ -58,6 +58,156 @@ export interface District {
   /** Sim day of the most recent *accepted* delivery, or `null` before any
    *  delivery has been accepted (KTD3). Drives neglect/decline (KTD6). */
   lastDeliveryDay: number | null;
+  /** Severance cuts (milestone 5 U3, KTD1): the chords of track segments and
+   *  station footprints that have crossed this district's footprint since it
+   *  was created, in world coordinates. APPEND-ONLY — no code path in this
+   *  codebase removes an entry. Bounded by construction (a district's fixed
+   *  footprint holds finitely many distinct segment chords) and defensively
+   *  by `CUTS_CAP` with nearest-pair merging (`recordCuts`, below), so a
+   *  pathological build spree cannot grow this list without limit. */
+  cuts: Cut[];
+}
+
+/**
+ * One severance cut (milestone 5 U3, KTD1): the chord of a track segment or
+ * station footprint that crossed a district's footprint when it was built.
+ * `strength` is the source's severance weight (`STATION_CUT_STRENGTH` or
+ * `TRACK_CUT_STRENGTH`, below) — `severancePenalty` (U4) reads it alongside
+ * the chord's length and centrality; nothing here is itself a damage number.
+ */
+export interface Cut {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  strength: number;
+}
+
+/**
+ * The fixed radius (Chebyshev, world tiles) within which infrastructure
+ * severs a district (U3), damage accrues length (U4), and relocation
+ * continuity is judged (U7) — the plan's Assumptions. Set once, implicitly,
+ * by the district's never-changing `anchorX`/`anchorY` (KTD1) and this
+ * constant: deliberately *not* derived from milestone 4's `development`-
+ * scaled scene extent (`world/streets.ts`'s `extentTilesFor`), which grows
+ * and can shrink under milestone 4's decay — a footprint that moved with it
+ * would let the same geometry drift in and out of severance eligibility
+ * over time, intolerable for an append-only, never-heals cut list where
+ * "was this chord ever in scope" must have one permanent answer.
+ */
+export const DISTRICT_FOOTPRINT_TILES = 6;
+
+/** Severance weight of a station's own footprint (yards included) — a
+ *  single point chord at the station's tile (KTD1). Heavier than a single
+ *  track segment: a depot's footprint is a bigger, more permanent cut than
+ *  one rail length. */
+export const STATION_CUT_STRENGTH = 1.5;
+
+/** Severance weight of one track segment (KTD1). */
+export const TRACK_CUT_STRENGTH = 1;
+
+/** Defensive hard cap on a single district's `cuts` list (KTD1). A
+ *  district's fixed, finite footprint already bounds the number of distinct
+ *  segment chords that can ever cross it in practice; this cap exists only
+ *  to guarantee boundedness even under a pathological build spree, and is
+ *  set comfortably above what normal play could ever reach. Exceeding it
+ *  merges the nearest pair of cuts (`mergeNearestCuts`) rather than
+ *  dropping data — the never-heals invariant applies to information, not to
+ *  list length. */
+export const CUTS_CAP = 64;
+
+/** Whether world point `(x, y)` lies within `district`'s fixed footprint
+ *  (Chebyshev, matching every other catchment-style check in this codebase
+ *  — `inCatchment`, `track.ts`). */
+function withinFootprint(district: District, x: number, y: number): boolean {
+  return Math.max(Math.abs(x - district.anchorX), Math.abs(y - district.anchorY)) <= DISTRICT_FOOTPRINT_TILES;
+}
+
+/** Whether a chord crosses `district`'s footprint at all: every track
+ *  segment this codebase ever builds connects Chebyshev-adjacent tiles
+ *  (`canLayTrack`), so checking either endpoint is exact, not an
+ *  approximation, for every chord this function is ever called with —
+ *  including the degenerate station-footprint chord (`ax===bx`, `ay===by`),
+ *  where both checks agree trivially. */
+function chordCrossesFootprint(district: District, chord: Pick<Cut, 'ax' | 'ay' | 'bx' | 'by'>): boolean {
+  return withinFootprint(district, chord.ax, chord.ay) || withinFootprint(district, chord.bx, chord.by);
+}
+
+/** Squared distance between two cuts' midpoints — cheap, monotonic with the
+ *  real distance, and all `mergeNearestCuts` needs to rank pairs. */
+function cutMidpointDistanceSq(a: Cut, b: Cut): number {
+  const amx = (a.ax + a.bx) / 2;
+  const amy = (a.ay + a.by) / 2;
+  const bmx = (b.ax + b.bx) / 2;
+  const bmy = (b.ay + b.by) / 2;
+  return (amx - bmx) ** 2 + (amy - bmy) ** 2;
+}
+
+/**
+ * Merge the two geometrically nearest cuts in `cuts` into one (KTD1's
+ * defensive cap): the never-heals invariant governs *information*, not list
+ * length, so past `CUTS_CAP` the record combines rather than drops. The
+ * merged chord is the midpoint-to-midpoint average of the two originals and
+ * its strength is their sum — nearby severance stays represented, at
+ * reduced geometric precision, rather than vanishing. Deterministic:
+ * ties break on the lower pair of indices (array order, never Map/Set
+ * iteration), and `cuts` is mutated in place.
+ */
+function mergeNearestCuts(cuts: Cut[]): void {
+  if (cuts.length < 2) return;
+  let bestI = 0;
+  let bestJ = 1;
+  let bestDistSq = Infinity;
+  for (let i = 0; i < cuts.length; i++) {
+    for (let j = i + 1; j < cuts.length; j++) {
+      const d = cutMidpointDistanceSq(cuts[i], cuts[j]);
+      if (d < bestDistSq) {
+        bestDistSq = d;
+        bestI = i;
+        bestJ = j;
+      }
+    }
+  }
+  const a = cuts[bestI];
+  const b = cuts[bestJ];
+  const merged: Cut = {
+    ax: (a.ax + b.ax) / 2,
+    ay: (a.ay + b.ay) / 2,
+    bx: (a.bx + b.bx) / 2,
+    by: (a.by + b.by) / 2,
+    strength: a.strength + b.strength,
+  };
+  cuts.splice(bestJ, 1); // remove the higher index first so bestI stays valid
+  cuts[bestI] = merged;
+}
+
+/**
+ * Append `chords` to every district in `districts` whose footprint they
+ * cross (milestone 5 U3, KTD1/KTD7). The one authoritative path every cut
+ * source routes through — `layTrack`/`buildStation` (`model/track.ts`),
+ * `emitRoute` (milestone 3's `commitRoute` path), and `ensureDistrict`'s
+ * backfill (`store/applyIntents.ts`) all call this, so build-time recording
+ * and creation-time backfill can never disagree about what counts as a cut
+ * (KTD7). Exact-duplicate geometry (same `ax`/`ay`/`bx`/`by`/`strength`,
+ * already recorded on that district) is skipped rather than re-appended —
+ * cheap idempotency for a caller that might record the same segment twice
+ * (e.g. a district backfilled from track that already crossed it once).
+ * NEVER removes a cut; the only shrinkage `mergeNearestCuts` performs is a
+ * length-preserving-or-shrinking merge past `CUTS_CAP`, not a deletion of
+ * information.
+ */
+export function recordCuts(districts: District[], chords: Cut[]): void {
+  for (const district of districts) {
+    for (const chord of chords) {
+      if (!chordCrossesFootprint(district, chord)) continue;
+      const exists = district.cuts.some(
+        (c) => c.ax === chord.ax && c.ay === chord.ay && c.bx === chord.bx && c.by === chord.by && c.strength === chord.strength,
+      );
+      if (exists) continue;
+      district.cuts.push({ ax: chord.ax, ay: chord.ay, bx: chord.bx, by: chord.by, strength: chord.strength });
+      if (district.cuts.length > CUTS_CAP) mergeNearestCuts(district.cuts);
+    }
+  }
 }
 
 /** Every form/density channel is clamped to this ceiling (AE5). */
@@ -84,6 +234,7 @@ export function makeDistrict(id: string, station: { id: string; x: number; y: nu
     lastGrowthDay: null,
     episodeCount: 0,
     lastDeliveryDay: null,
+    cuts: [],
   };
 }
 
