@@ -3,9 +3,12 @@ import { generateGame } from '../../src/world/generate.ts';
 import { tick } from '../../src/sim/tick.ts';
 import { productionSystem, OUTPUT_CAP } from '../../src/sim/systems/production.ts';
 import { demandSystem, MAX_BACKLOG_DAYS } from '../../src/sim/systems/demand.ts';
+import { deliverySystem } from '../../src/sim/systems/delivery.ts';
 import { makeIndustry } from '../../src/sim/model/industries.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
-import { createGameState } from '../../src/sim/state.ts';
+import { makeTrain } from '../../src/sim/model/trains.ts';
+import { makeDistrict, GOOD_FORM_WEIGHTS } from '../../src/sim/model/districts.ts';
+import { createGameState, type GameState } from '../../src/sim/state.ts';
 
 describe('production', () => {
   it('raw extractors accumulate output up to the cap', () => {
@@ -61,5 +64,80 @@ describe('demand', () => {
     const anyBacklog = s.cities.some((c) => Object.values(c.backlog).some((v) => (v ?? 0) > 0));
     expect(anyStock).toBe(true);
     expect(anyBacklog).toBe(true);
+  });
+});
+
+describe('district delivery accrual (M4 U3, KTD3)', () => {
+  // A train sitting at the station, mid-stop, with `deliverySystem` run in
+  // isolation — mirrors the repo convention (movement.test.ts) of driving
+  // just the system under test rather than the full pipeline.
+  function stationWithTrainAt(cars: GameState['trains'][0]['cars']): { s: GameState; train: ReturnType<typeof makeTrain> } {
+    const s = createGameState(1);
+    s.world = { width: 10, height: 10 };
+    s.stations.push({ id: 'stn', x: 5, y: 5, radius: 2 });
+    s.districts.push(makeDistrict('dst', { id: 'stn', x: 5, y: 5 }));
+    const train = makeTrain('t', 'planet', [{ stationId: 'stn', loads: [], unload: true }]);
+    train.atStationId = 'stn';
+    train.targetIndex = 0;
+    train.cars = cars;
+    s.trains.push(train);
+    return { s, train };
+  }
+
+  it("delivering food a city demands raises the district's residential channel, matching the accepted quantity", () => {
+    const { s, train } = stationWithTrainAt([{ good: 'food', qty: 5, originX: 5, originY: 5, loadedDay: 0 }]);
+    const city = makeCity('c', 'C', 5, 5, 1);
+    city.demand.food = 10;
+    city.backlog.food = 50; // plenty of backlog, so the full 5 units are accepted
+    s.cities.push(city);
+
+    tick(s, 1, [deliverySystem]);
+
+    const district = s.districts[0];
+    expect(district.residential).toBeCloseTo(GOOD_FORM_WEIGHTS.food.residential! * 5, 9);
+    expect(district.lastDeliveryDay).toBe(0);
+    expect(train.cars).toHaveLength(0); // all 5 units accepted, nothing left on the train
+  });
+
+  it('cargo the catchment demands none of accrues nothing and does not stamp lastDeliveryDay', () => {
+    const { s, train } = stationWithTrainAt([{ good: 'steel', qty: 5, originX: 5, originY: 5, loadedDay: 0 }]);
+    // No city, no processor in catchment wants steel.
+
+    tick(s, 1, [deliverySystem]);
+
+    const district = s.districts[0];
+    expect(district.industrial).toBe(0);
+    expect(district.density).toBe(0);
+    expect(district.lastDeliveryDay).toBeNull();
+    expect(train.cars).toHaveLength(1); // stayed on the train, undelivered
+    expect(train.cars[0].qty).toBe(5);
+  });
+
+  it("feeding a processor accrues to the district under the delivered good's weights", () => {
+    const { s } = stationWithTrainAt([{ good: 'iron', qty: 5, originX: 5, originY: 5, loadedDay: 0 }]);
+    const mill = makeIndustry('mill', 'steelMill', 5, 5); // consumes iron + coal
+    s.industries.push(mill);
+
+    tick(s, 1, [deliverySystem]);
+
+    const district = s.districts[0];
+    expect(district.industrial).toBeCloseTo(GOOD_FORM_WEIGHTS.iron.industrial! * 5, 9);
+    expect(district.lastDeliveryDay).toBe(0);
+    expect(mill.inputStock.iron).toBe(5);
+  });
+
+  it('a delivery split between city demand and remaining-on-train accrues only the accepted portion', () => {
+    const { s, train } = stationWithTrainAt([{ good: 'food', qty: 5, originX: 5, originY: 5, loadedDay: 0 }]);
+    const city = makeCity('c', 'C', 5, 5, 1);
+    city.demand.food = 10;
+    city.backlog.food = 3; // only 3 of the 5 units can be accepted
+    s.cities.push(city);
+
+    tick(s, 1, [deliverySystem]);
+
+    const district = s.districts[0];
+    expect(district.residential).toBeCloseTo(GOOD_FORM_WEIGHTS.food.residential! * 3, 9);
+    expect(train.cars).toHaveLength(1);
+    expect(train.cars[0].qty).toBe(2); // the unaccepted 2 units stayed on the train
   });
 });
