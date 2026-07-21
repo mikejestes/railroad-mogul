@@ -20,8 +20,16 @@
  *
  * `tierFor` takes the current tier as an input specifically so that band is
  * directional — it is not a pure scale-to-tier lookup table.
+ *
+ * M4 U7 (KTD7) adds a fourth tier, `street`, above `local` — the same
+ * hysteresis pattern, one more entry. District scenes (`world/streets.ts`,
+ * `render/districtRenderer.ts`) draw at `street`; every tier below it keeps
+ * exactly the marker rendering it already had (a regression guard: adding a
+ * tier is a render branch, not a change to the tiers that already exist).
+ * Continuous zoom with no mode switch (R10) is preserved by construction —
+ * `tierFor`'s walk generalizes to any tier count.
  */
-export type ZoomTierId = 'continent' | 'region' | 'local';
+export type ZoomTierId = 'continent' | 'region' | 'local' | 'street';
 
 export interface ZoomTierDef {
   id: ZoomTierId;
@@ -42,6 +50,16 @@ export const REGION_DOWN_THRESHOLD = 16;
 export const LOCAL_UP_THRESHOLD = 140;
 export const LOCAL_DOWN_THRESHOLD = 100;
 
+/** Scale above which the camera advances from `local` into `street`; below
+ * which it retreats from `street` back to `local` (M4 U7, KTD7). Chosen so
+ * `street` spans roughly the same zoom-depth *ratio* `local` does today
+ * (`MAX_SCALE / LOCAL_UP_THRESHOLD` ~= 3.4x pre-M4; `STREET_UP_THRESHOLD`'s
+ * own up-to-`MAX_SCALE` span below is sized the same way) — the tier needs
+ * real depth to resolve streets and building footprints in, not just a
+ * sliver before hitting the zoom ceiling. */
+export const STREET_UP_THRESHOLD = 1000;
+export const STREET_DOWN_THRESHOLD = 700;
+
 /**
  * Ordered lowest-scale tier first. `continent`'s thresholds are never read
  * by `tierFor` (there is no tier below it to advance from or retreat to) —
@@ -51,6 +69,7 @@ export const ZOOM_TIERS: readonly ZoomTierDef[] = [
   { id: 'continent', upThreshold: -Infinity, downThreshold: -Infinity },
   { id: 'region', upThreshold: REGION_UP_THRESHOLD, downThreshold: REGION_DOWN_THRESHOLD },
   { id: 'local', upThreshold: LOCAL_UP_THRESHOLD, downThreshold: LOCAL_DOWN_THRESHOLD },
+  { id: 'street', upThreshold: STREET_UP_THRESHOLD, downThreshold: STREET_DOWN_THRESHOLD },
 ];
 
 /**

@@ -12,7 +12,6 @@ describe('applyIntent exhaustiveness (U3)', () => {
   });
 });
 
-<<<<<<< HEAD
 describe('commitRoute intent (milestone 3 U4, R4/R5/R9/R10/R12, KTD2)', () => {
   // Anchored at (17,0)..(19,0) — the same flat, real, non-sea plains run
   // (DEFAULT_TERRAIN_SEED fallback) tests/sim/track.test.ts and

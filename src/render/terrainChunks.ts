@@ -160,10 +160,15 @@ export const REGION_OCTAVES = 5;
 /** Octave budget for the `local` tier — the simulation's own full budget
  * (`FULL_OCTAVES`, `fields.ts`), since at this zoom every octave is visible. */
 export const LOCAL_OCTAVES = FULL_OCTAVES;
+/** Octave budget for the `street` tier (M4 U7, KTD7) — the same full budget
+ * as `local`: terrain content itself does not change at `street` (only the
+ * district scene layer draws above it, see `render/districtRenderer.ts`),
+ * so there is no coarser-vs-finer terrain distinction to make at this tier. */
+export const STREET_OCTAVES = LOCAL_OCTAVES;
 
 /**
  * Octaves to evaluate elevation at for a given zoom tier (KTD4): fewer at
- * coarser tiers, monotonically non-decreasing from `continent` to `local`
+ * coarser tiers, monotonically non-decreasing from `continent` to `street`
  * (see `tests/render/chunks.test.ts`, which checks this generically against
  * `ZOOM_TIERS`'s own ordering rather than hardcoding it a second time).
  */
@@ -175,6 +180,8 @@ export function octaveBudgetForTier(tier: ZoomTierId): number {
       return REGION_OCTAVES;
     case 'local':
       return LOCAL_OCTAVES;
+    case 'street':
+      return STREET_OCTAVES;
   }
 }
 

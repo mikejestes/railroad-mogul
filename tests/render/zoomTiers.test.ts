@@ -6,6 +6,8 @@ import {
   REGION_DOWN_THRESHOLD,
   LOCAL_UP_THRESHOLD,
   LOCAL_DOWN_THRESHOLD,
+  STREET_UP_THRESHOLD,
+  STREET_DOWN_THRESHOLD,
   type ZoomTierId,
 } from '../../src/render/zoomTiers.ts';
 
@@ -23,12 +25,21 @@ describe('zoom tier hysteresis (KTD5)', () => {
     expect(tierFor(bandScale, 'local')).toBe('local');
   });
 
+  it('M4 U7: scale inside the local/street hysteresis band returns the current tier, approached from either side', () => {
+    const bandScale = (STREET_DOWN_THRESHOLD + STREET_UP_THRESHOLD) / 2;
+    expect(tierFor(bandScale, 'local')).toBe('local');
+    expect(tierFor(bandScale, 'street')).toBe('street');
+  });
+
   it('crossing upThreshold from below advances the tier', () => {
     const justAbove = REGION_UP_THRESHOLD + 0.01;
     expect(tierFor(justAbove, 'continent')).toBe('region');
 
     const justAboveLocal = LOCAL_UP_THRESHOLD + 0.01;
     expect(tierFor(justAboveLocal, 'region')).toBe('local');
+
+    const justAboveStreet = STREET_UP_THRESHOLD + 0.01;
+    expect(tierFor(justAboveStreet, 'local')).toBe('street');
   });
 
   it('crossing downThreshold from above retreats the tier', () => {
@@ -37,6 +48,9 @@ describe('zoom tier hysteresis (KTD5)', () => {
 
     const justBelowLocal = LOCAL_DOWN_THRESHOLD - 0.01;
     expect(tierFor(justBelowLocal, 'local')).toBe('region');
+
+    const justBelowStreet = STREET_DOWN_THRESHOLD - 0.01;
+    expect(tierFor(justBelowStreet, 'street')).toBe('local');
   });
 
   it('does not advance or retreat while scale sits exactly at a threshold (band is inclusive)', () => {
@@ -60,12 +74,16 @@ describe('zoom tier hysteresis (KTD5)', () => {
     expect(tierFor(0.001, 'region')).toBe('continent');
   });
 
-  it('scale far above the highest threshold clamps to the highest (local) tier', () => {
-    expect(tierFor(1_000_000, 'continent')).toBe('local');
-    expect(tierFor(1_000_000, 'region')).toBe('local');
+  it('scale far above the highest threshold clamps to the highest (street) tier', () => {
+    expect(tierFor(1_000_000, 'continent')).toBe('street');
+    expect(tierFor(1_000_000, 'region')).toBe('street');
   });
 
-  it('a large scale jump from continent lands directly on local, skipping no logic for the intermediate boundary', () => {
+  it('a large scale jump from continent lands directly on street, skipping no logic for the intermediate boundaries', () => {
+    expect(tierFor(STREET_UP_THRESHOLD + 1, 'continent')).toBe('street');
+  });
+
+  it('a large scale jump from continent to just past local lands on local, not street', () => {
     expect(tierFor(LOCAL_UP_THRESHOLD + 1, 'continent')).toBe('local');
   });
 
@@ -91,7 +109,7 @@ describe('zoom tier hysteresis (KTD5)', () => {
   });
 
   it('ZOOM_TIERS is ordered lowest tier first and defines a downThreshold below its upThreshold for every real boundary', () => {
-    expect(ZOOM_TIERS.map((t) => t.id)).toEqual(['continent', 'region', 'local']);
+    expect(ZOOM_TIERS.map((t) => t.id)).toEqual(['continent', 'region', 'local', 'street']);
     for (const tier of ZOOM_TIERS.slice(1)) {
       expect(tier.downThreshold).toBeLessThan(tier.upThreshold);
     }
