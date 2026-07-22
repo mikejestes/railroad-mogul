@@ -7,8 +7,19 @@ import {
   ageVariety,
   densityScore,
   districtHealth,
+  jacobsHealth,
+  severancePenalty,
+  SEVERANCE_PENALTY_MAX,
   districtTrafficMultiplier,
+  districtTrafficWeight,
+  recordCuts,
   GOOD_FORM_WEIGHTS,
+  STATION_TYPE_MODIFIERS,
+  STATION_TYPE_TRAFFIC_WEIGHTS,
+  DISTRICT_FOOTPRINT_TILES,
+  STATION_CUT_STRENGTH,
+  TRACK_CUT_STRENGTH,
+  CUTS_CAP,
   CHANNEL_CAP,
   EPISODE_TARGET,
   EPISODE_COUNT_CAP,
@@ -19,7 +30,10 @@ import {
   MULT_MAX,
   DEVELOPMENT_FLOOR,
   type District,
+  type Cut,
 } from '../../src/sim/model/districts.ts';
+import { layTrack, buildStation } from '../../src/sim/model/track.ts';
+import type { StationType } from '../../src/sim/model/track.ts';
 import {
   districtSystem,
   developmentTarget,
@@ -28,12 +42,25 @@ import {
   GROWTH_RATE_PER_DAY,
   DECLINE_RATE_PER_DAY,
 } from '../../src/sim/systems/districts.ts';
-import { createGameState, serialize } from '../../src/sim/state.ts';
+import { createGameState, serialize, type GameState } from '../../src/sim/state.ts';
 import { tick } from '../../src/sim/tick.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
 import { generateGame } from '../../src/world/generate.ts';
-import { applyIntent } from '../../src/store/applyIntents.ts';
+import { applyIntent, ensureDistrict } from '../../src/store/applyIntents.ts';
 import type { GoodId } from '../../src/sim/model/goods.ts';
+
+// Anchored at (OX, OY) — the same 10x10 sea-free coordinate block
+// tests/sim/track.test.ts already relies on (real, authored geography; no
+// stored terrain array to hand-fill).
+const OX = 19;
+const OY = 0;
+
+function buildableWorld(w = 10, h = 10): GameState {
+  const s = createGameState(1);
+  s.world = { width: OX + w, height: OY + h };
+  s.moneyCents = 1_000_000_00;
+  return s;
+}
 
 // Local factory, per repo test convention.
 function station(id = 'stn-0', x = 5, y = 5) {
@@ -180,7 +207,7 @@ describe('district model (M4 U1, KTD1)', () => {
     });
   });
 
-  describe('districtHealth (KTD4, R6)', () => {
+  describe('jacobsHealth (M4 KTD4, R6; renamed from districtHealth in milestone 5 U4, KTD6)', () => {
     it('stays in [0, 1] across a randomized sweep of valid records', () => {
       let seed = 12345;
       const rand = () => {
@@ -198,7 +225,7 @@ describe('district model (M4 U1, KTD1)', () => {
           firstGrowthDay: 0,
           lastGrowthDay: Math.floor(rand() * AGE_SPAN_DAYS * 2),
         };
-        const h = districtHealth(d);
+        const h = jacobsHealth(d);
         expect(h).toBeGreaterThanOrEqual(0);
         expect(h).toBeLessThanOrEqual(1);
       }
@@ -215,21 +242,35 @@ describe('district model (M4 U1, KTD1)', () => {
         firstGrowthDay: 0,
         lastGrowthDay: 10,
       };
-      const baseHealth = districtHealth(base);
+      const baseHealth = jacobsHealth(base);
 
       const betterDensity: District = { ...base, density: 0.6 };
-      expect(districtHealth(betterDensity)).toBeGreaterThan(baseHealth);
+      expect(jacobsHealth(betterDensity)).toBeGreaterThan(baseHealth);
 
       const betterGranularity: District = { ...base, episodeCount: 10 };
-      expect(districtHealth(betterGranularity)).toBeGreaterThan(baseHealth);
+      expect(jacobsHealth(betterGranularity)).toBeGreaterThan(baseHealth);
 
       const betterAge: District = { ...base, lastGrowthDay: 400 };
-      expect(districtHealth(betterAge)).toBeGreaterThan(baseHealth);
+      expect(jacobsHealth(betterAge)).toBeGreaterThan(baseHealth);
 
       // Balancing channels toward uniform, from an already-lopsided base, raises useMix.
       const lopsided: District = { ...base, residential: 0.9, commercial: 0.05, industrial: 0.05 };
       const balanced: District = { ...base, residential: 0.3, commercial: 0.3, industrial: 0.3 };
-      expect(districtHealth(balanced)).toBeGreaterThan(districtHealth(lopsided));
+      expect(jacobsHealth(balanced)).toBeGreaterThan(jacobsHealth(lopsided));
+    });
+  });
+
+  describe('districtHealth composes jacobsHealth with severance (milestone 5 U4, KTD6)', () => {
+    it('an uncut district has districtHealth exactly equal to jacobsHealth (regression guard)', () => {
+      const d: District = { ...makeDistrict('a', station()), residential: 0.4, commercial: 0.3, industrial: 0.3, density: 0.5 };
+      expect(d.cuts).toHaveLength(0);
+      expect(districtHealth(d)).toBe(jacobsHealth(d));
+    });
+
+    it('a cut district has strictly lower districtHealth than its own jacobsHealth', () => {
+      const d: District = { ...makeDistrict('a', station()), residential: 0.4, commercial: 0.3, industrial: 0.3, density: 0.5 };
+      d.cuts.push({ ax: d.anchorX, ay: d.anchorY, bx: d.anchorX, by: d.anchorY, strength: 1 });
+      expect(districtHealth(d)).toBeLessThan(jacobsHealth(d));
     });
   });
 
@@ -246,6 +287,314 @@ describe('district model (M4 U1, KTD1)', () => {
         expect(value).not.toBeUndefined();
       }
     });
+  });
+});
+
+describe('station type shapes the district (milestone 5 U2, R5, KTD4)', () => {
+  it("every station type has a modifier row, and 'mixed' is the identity (no entries)", () => {
+    const types: StationType[] = ['freight', 'passenger', 'mixed'];
+    for (const t of types) expect(STATION_TYPE_MODIFIERS[t]).toBeDefined();
+    expect(Object.keys(STATION_TYPE_MODIFIERS.mixed)).toHaveLength(0);
+  });
+
+  it("AE2 (model level): identical delivery histories through a freight yard and a passenger terminal yield different dominant channels and densities", () => {
+    const freightFed = makeDistrict('dst-f', station());
+    const passengerFed = makeDistrict('dst-p', station());
+    // Small enough qty/iteration count that neither channel saturates at
+    // CHANNEL_CAP — a difference masked by both sides clamping to 1 would
+    // prove nothing about the modifier table.
+    for (let i = 0; i < 10; i++) {
+      accrueDelivery(freightFed, 'steel', 2, i, 'freight');
+      accrueDelivery(freightFed, 'goods', 2, i, 'freight');
+      accrueDelivery(passengerFed, 'steel', 2, i, 'passenger');
+      accrueDelivery(passengerFed, 'goods', 2, i, 'passenger');
+    }
+    expect(freightFed.industrial).toBeLessThan(CHANNEL_CAP);
+    expect(passengerFed.commercial).toBeLessThan(CHANNEL_CAP);
+    // Freight amplifies industrial/density and damps commercial relative to passenger.
+    expect(freightFed.industrial).toBeGreaterThan(passengerFed.industrial);
+    expect(freightFed.density).toBeGreaterThan(passengerFed.density);
+    expect(passengerFed.commercial).toBeGreaterThan(freightFed.commercial);
+  });
+
+  it('mixed-depot accrual is byte-identical to calling accrueDelivery with no stationType at all (regression guard)', () => {
+    const withDefault = makeDistrict('dst-x', station());
+    const withMixed = makeDistrict('dst-x', station());
+    for (let i = 0; i < 20; i++) {
+      accrueDelivery(withDefault, 'steel', 4, i);
+      accrueDelivery(withMixed, 'steel', 4, i, 'mixed');
+    }
+    expect(withMixed).toEqual(withDefault);
+  });
+
+  it('a zero or negative quantity accrues nothing regardless of station type', () => {
+    const d = makeDistrict('dst-0', station());
+    accrueDelivery(d, 'food', 0, 5, 'freight');
+    accrueDelivery(d, 'food', -3, 5, 'passenger');
+    expect(d.residential).toBe(0);
+    expect(d.lastDeliveryDay).toBeNull();
+  });
+});
+
+describe('station type traffic mix (milestone 5 U2, R5, KTD4)', () => {
+  it("every station type has a traffic weight row, and 'mixed' is neutral (1, 1)", () => {
+    expect(STATION_TYPE_TRAFFIC_WEIGHTS.mixed).toEqual({ passengers: 1, mail: 1 });
+  });
+
+  it('districtTrafficWeight reads the neutral default for an untyped (pre-M5-fixture) station', () => {
+    const untyped = { id: 's', x: 0, y: 0, radius: 1 };
+    expect(districtTrafficWeight(untyped, 'passengers')).toBe(1);
+    expect(districtTrafficWeight(untyped, 'mail')).toBe(1);
+  });
+
+  function districtServing(id: string, stationId: string, x: number, y: number): District {
+    const d = makeDistrict(id, { id: stationId, x, y });
+    // Tie jacobsHealth to exactly HEALTH_NEUTRAL so the health-deviation term
+    // contributes zero and only the type skew can explain any difference.
+    d.residential = 1 / 3;
+    d.commercial = 1 / 3;
+    d.industrial = 1 / 3;
+    d.density = DENSITY_PLATEAU / 2;
+    d.development = 0.5;
+    return d;
+  }
+
+  it('AE2 (traffic level): a freight-anchored and a passenger-anchored district contribute measurably different passenger/mail generation at equal (neutral) health', () => {
+    const s = createGameState(1);
+    const city = makeCity('c', 'C', 0, 0, 1);
+    s.cities.push(city);
+    s.stations.push({ id: 'stn-f', x: 0, y: 0, radius: 2, stationType: 'freight' });
+    s.stations.push({ id: 'stn-p', x: 5, y: 5, radius: 2, stationType: 'passenger' });
+
+    const freightDistrict = districtServing('dst-f', 'stn-f', 0, 0);
+    const passengerDistrict = districtServing('dst-p', 'stn-p', 5, 5);
+    expect(districtHealth(freightDistrict)).toBeCloseTo(districtHealth(passengerDistrict), 9); // equal health
+
+    const cityAtFreight = makeCity('cf', 'CF', 0, 0, 1);
+    const cityAtPassenger = makeCity('cp', 'CP', 5, 5, 1);
+    const freightOnly = createGameState(1);
+    freightOnly.stations.push({ id: 'stn-f', x: 0, y: 0, radius: 2, stationType: 'freight' });
+    freightOnly.districts.push(freightDistrict);
+    const passengerOnly = createGameState(1);
+    passengerOnly.stations.push({ id: 'stn-p', x: 5, y: 5, radius: 2, stationType: 'passenger' });
+    passengerOnly.districts.push(passengerDistrict);
+
+    const freightPassengers = districtTrafficMultiplier(freightOnly, cityAtFreight, 'passengers');
+    const passengerPassengers = districtTrafficMultiplier(passengerOnly, cityAtPassenger, 'passengers');
+    const freightMail = districtTrafficMultiplier(freightOnly, cityAtFreight, 'mail');
+    const passengerMail = districtTrafficMultiplier(passengerOnly, cityAtPassenger, 'mail');
+
+    expect(passengerPassengers).toBeGreaterThan(freightPassengers);
+    expect(freightMail).toBeGreaterThan(passengerMail);
+  });
+
+  it("omitting `good` (every pre-M5 call site) is byte-identical to milestone 4's formula, and a mixed-anchored district's weighted call equals its unweighted call", () => {
+    const s = createGameState(1);
+    const city = makeCity('c', 'C', 0, 0, 1);
+    s.cities.push(city);
+    s.stations.push({ id: 'stn', x: 0, y: 0, radius: 2, stationType: 'mixed' });
+    s.districts.push(districtServing('dst', 'stn', 0, 0));
+
+    const unweighted = districtTrafficMultiplier(s, city);
+    expect(districtTrafficMultiplier(s, city, 'passengers')).toBe(unweighted);
+    expect(districtTrafficMultiplier(s, city, 'mail')).toBe(unweighted);
+  });
+});
+
+describe('severance records (milestone 5 U3, R7/R8/R12, KTD1/KTD7)', () => {
+  function cut(overrides: Partial<Cut> = {}): Cut {
+    return { ax: 0, ay: 0, bx: 1, by: 0, strength: TRACK_CUT_STRENGTH, ...overrides };
+  }
+
+  it('a district is born with an empty, append-only cuts list', () => {
+    const d = makeDistrict('dst-0', station());
+    expect(d.cuts).toEqual([]);
+  });
+
+  it("recordCuts appends a chord within a district's footprint; a chord entirely outside it is not appended", () => {
+    const anchor = { id: 'stn', x: 0, y: 0 };
+    const inside = makeDistrict('dst-in', anchor);
+    const outside = makeDistrict('dst-out', { id: 'stn2', x: 1000, y: 1000 });
+    recordCuts([inside, outside], [cut({ ax: 0, ay: 0, bx: 1, by: 0 })]);
+    expect(inside.cuts).toHaveLength(1);
+    expect(outside.cuts).toHaveLength(0);
+  });
+
+  it('a chord exactly at the footprint boundary is included; just beyond it is excluded', () => {
+    const d = makeDistrict('dst-0', { id: 'stn', x: 0, y: 0 });
+    const atEdge = cut({ ax: DISTRICT_FOOTPRINT_TILES, ay: 0, bx: DISTRICT_FOOTPRINT_TILES, by: 0 });
+    recordCuts([d], [atEdge]);
+    expect(d.cuts).toHaveLength(1);
+
+    const beyond = makeDistrict('dst-1', { id: 'stn', x: 0, y: 0 });
+    const outsideEdge = cut({
+      ax: DISTRICT_FOOTPRINT_TILES + 1,
+      ay: 0,
+      bx: DISTRICT_FOOTPRINT_TILES + 2,
+      by: 0,
+    });
+    recordCuts([beyond], [outsideEdge]);
+    expect(beyond.cuts).toHaveLength(0);
+  });
+
+  it('laying track through a district appends a TRACK_CUT_STRENGTH cut; laying it outside the district appends none', () => {
+    const s = buildableWorld();
+    // Hand-pushed districts (no applyIntent/ensureDistrict involved), so this
+    // isolates layTrack's own recordCuts call from the creation-time backfill
+    // path (covered separately by the KTD7 test below).
+    const near = makeDistrict('dst-near', { id: 'stn-0', x: OX, y: OY });
+    const far = makeDistrict('dst-far', { id: 'stn-far', x: OX + 500, y: OY + 500 });
+    s.districts.push(near, far);
+
+    const before = s.moneyCents;
+    const ok = layTrack(s, OX, OY, OX + 1, OY);
+    expect(ok).toBe(true);
+    expect(before - s.moneyCents).toBeGreaterThan(0);
+    expect(near.cuts).toEqual([{ ax: OX, ay: OY, bx: OX + 1, by: OY, strength: TRACK_CUT_STRENGTH }]);
+    expect(far.cuts).toHaveLength(0);
+  });
+
+  it('building a station in a district appends a STATION_CUT_STRENGTH point cut into any pre-existing neighboring district', () => {
+    const s = buildableWorld();
+    const neighbor = makeDistrict('dst-neighbor', { id: 'other-stn', x: OX, y: OY });
+    s.districts.push(neighbor);
+
+    buildStation(s, 'stn-0', OX + 1, OY, 1);
+    expect(neighbor.cuts).toContainEqual({
+      ax: OX + 1,
+      ay: OY,
+      bx: OX + 1,
+      by: OY,
+      strength: STATION_CUT_STRENGTH,
+    });
+  });
+
+  it('KTD7: a district created on a tile already crossed by pre-existing track is born with the backfilled cut', () => {
+    const s = buildableWorld();
+    layTrack(s, OX, OY, OX + 1, OY); // no district exists yet; nothing to cut
+    const station0 = { id: 'stn-0', x: OX, y: OY, radius: 1 };
+    s.stations.push(station0);
+    ensureDistrict(s, station0);
+
+    const district = s.districts[0];
+    expect(district.cuts.length).toBeGreaterThan(0);
+    expect(district.cuts).toContainEqual({ ax: OX, ay: OY, bx: OX + 1, by: OY, strength: TRACK_CUT_STRENGTH });
+  });
+
+  it('identical geometry recorded twice stores exactly one cut', () => {
+    const d = makeDistrict('dst-0', { id: 'stn', x: 0, y: 0 });
+    recordCuts([d], [cut()]);
+    recordCuts([d], [cut()]);
+    expect(d.cuts).toHaveLength(1);
+  });
+
+  it('exceeding CUTS_CAP merges the nearest pair rather than dropping data (list never exceeds the cap, strength is conserved)', () => {
+    const d = makeDistrict('dst-0', { id: 'stn', x: 0, y: 0 });
+    const totalStrengthIn = CUTS_CAP + 10;
+    for (let i = 0; i < totalStrengthIn; i++) {
+      // Distinct, tightly-packed chords so merges are geometrically meaningful
+      // and none collide with an existing exact-duplicate (which would be
+      // skipped rather than appended, per the idempotency rule above).
+      const x = i * 0.001;
+      recordCuts([d], [{ ax: x, ay: 0, bx: x + 0.0005, by: 0, strength: 1 }]);
+    }
+    expect(d.cuts.length).toBeLessThanOrEqual(CUTS_CAP);
+    const totalStrengthOut = d.cuts.reduce((sum, c) => sum + c.strength, 0);
+    expect(totalStrengthOut).toBe(totalStrengthIn); // no strength (information) lost to merging
+  });
+
+  it('the public API offers no cut-removal function (structural never-heals guard)', async () => {
+    const mod = (await import('../../src/sim/model/districts.ts')) as Record<string, unknown>;
+    const exportNames = Object.keys(mod);
+    for (const name of exportNames) {
+      expect(name.toLowerCase()).not.toMatch(/remove.*cut|clear.*cut|delete.*cut/);
+    }
+  });
+
+  it('cuts round-trip through JSON serialization exactly, with no NaN/Infinity/undefined', () => {
+    const d = makeDistrict('dst-0', { id: 'stn', x: 0, y: 0 });
+    recordCuts([d], [cut({ ax: 0, ay: 0, bx: 1, by: 0, strength: 1.5 })]);
+    const round = JSON.parse(JSON.stringify(d)) as District;
+    expect(round.cuts).toEqual(d.cuts);
+    for (const c of round.cuts) {
+      for (const value of Object.values(c)) {
+        expect(Number.isNaN(value as number)).toBe(false);
+        expect(value).not.toBe(Infinity);
+        expect(value).not.toBeUndefined();
+      }
+    }
+  });
+
+  it('determinism: the same seed and intent log (including track/station builds) produces byte-identical district cuts', () => {
+    const run = () => {
+      const s = buildableWorld();
+      applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 1 });
+      applyIntent(s, { kind: 'layTrack', ax: OX + 1, ay: OY, bx: OX + 2, by: OY });
+      for (let i = 0; i < 20; i++) tick(s);
+      return s;
+    };
+    expect(serialize(run())).toBe(serialize(run()));
+  });
+});
+
+describe('severancePenalty (milestone 5 U4, R7/R8/R9/R10, KTD5/KTD6)', () => {
+  function healthyBase(id: string, x: number, y: number): District {
+    const d = makeDistrict(id, { id: `${id}-stn`, x, y });
+    d.residential = 0.4;
+    d.commercial = 0.35;
+    d.industrial = 0.3;
+    d.density = 0.6;
+    d.development = 0.5;
+    d.episodeCount = EPISODE_TARGET;
+    d.firstGrowthDay = 0;
+    d.lastGrowthDay = AGE_SPAN_DAYS;
+    return d;
+  }
+
+  it('an uncut district has severancePenalty exactly 0', () => {
+    expect(severancePenalty(makeDistrict('a', station()))).toBe(0);
+  });
+
+  it('AE3 (R10 arm): the same-length cut through the anchor produces strictly more penalty than the identical-length cut at the footprint edge', () => {
+    const throughMiddle = healthyBase('mid', 0, 0);
+    throughMiddle.cuts.push({ ax: 0, ay: 0, bx: 1, by: 0, strength: TRACK_CUT_STRENGTH });
+
+    const alongEdge = healthyBase('edge', 0, 0);
+    const e = DISTRICT_FOOTPRINT_TILES;
+    alongEdge.cuts.push({ ax: e, ay: e, bx: e + 1, by: e, strength: TRACK_CUT_STRENGTH });
+
+    expect(severancePenalty(throughMiddle)).toBeGreaterThan(severancePenalty(alongEdge));
+  });
+
+  it('penalty is monotonic in cut count and strength, and bounded below SEVERANCE_PENALTY_MAX for any cut list', () => {
+    const d = makeDistrict('a', station());
+    let last = severancePenalty(d);
+    expect(last).toBe(0);
+    for (let i = 0; i < 40; i++) {
+      d.cuts.push({ ax: 5, ay: 5, bx: 5 + (i % 2), by: 5, strength: 2 });
+      const next = severancePenalty(d);
+      expect(next).toBeGreaterThanOrEqual(last);
+      expect(next).toBeLessThan(SEVERANCE_PENALTY_MAX);
+      last = next;
+    }
+  });
+
+  it('AE3 (R9 arm): a cut district generates measurably less passenger/mail traffic than the identical uncut district, through districtTrafficMultiplier', () => {
+    const uncutState = createGameState(1);
+    const city1 = makeCity('c1', 'C1', 0, 0, 1);
+    uncutState.cities.push(city1);
+    uncutState.stations.push({ id: 'uncut-stn', x: 0, y: 0, radius: 2 });
+    uncutState.districts.push(healthyBase('uncut', 0, 0));
+
+    const cutState = createGameState(1);
+    const city2 = makeCity('c2', 'C2', 0, 0, 1);
+    cutState.cities.push(city2);
+    cutState.stations.push({ id: 'cut-stn', x: 0, y: 0, radius: 2 });
+    const cutDistrict = healthyBase('cut', 0, 0);
+    cutDistrict.cuts.push({ ax: 0, ay: 0, bx: 1, by: 0, strength: TRACK_CUT_STRENGTH });
+    cutState.districts.push(cutDistrict);
+
+    expect(districtTrafficMultiplier(cutState, city2)).toBeLessThan(districtTrafficMultiplier(uncutState, city1));
   });
 });
 

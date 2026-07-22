@@ -1,6 +1,6 @@
 import type { System } from '../tick.ts';
 import { RECIPES, type GoodId } from '../model/goods.ts';
-import { districtTrafficMultiplier } from '../model/districts.ts';
+import { trafficMixByGood, type TrafficGood } from '../model/districts.ts';
 
 /**
  * Production system (U4, first in the KTD3 pipeline). Each tick, raw extractors
@@ -17,6 +17,15 @@ import { districtTrafficMultiplier } from '../model/districts.ts';
  * generates more outbound traffic, the "good urbanism pays" loop. Freight
  * output (industry `outputStock`, below) is untouched (KTD9 isolation): only
  * passengers and mail couple to district health.
+ *
+ * Milestone 5 fix (AE2's traffic arm, KTD4): this now calls `trafficMixByGood`
+ * (one multiplier per `TrafficGood`) instead of a single good-less
+ * `districtTrafficMultiplier` call shared by both goods — the good-less form
+ * never picks up `STATION_TYPE_TRAFFIC_WEIGHTS`' per-type skew, so a freight
+ * yard and a passenger terminal used to generate identical passenger/mail
+ * traffic here despite the type table existing. `CITY_SUPPLIED_GOODS` is
+ * exactly `['passengers', 'mail']` (`TrafficGood`'s only two members) — the
+ * cast below is safe by that construction, not a loosened check.
  */
 export const OUTPUT_CAP = 40;
 export const CITY_SUPPLY_CAP = 40;
@@ -27,14 +36,16 @@ export const CITY_SUPPLIED_GOODS: GoodId[] = ['passengers', 'mail'];
 export const productionSystem: System = (state, dtDays) => {
   // Cities generate passengers/mail at the same rate they demand them — a big
   // city both sends and receives a lot of traffic. Scaled by district health
-  // in range (KTD5): a city with no districted station in range multiplies
-  // by exactly 1, so pre-milestone traffic numbers are a regression case of
-  // this same code path, not a special one.
+  // *and* station-type traffic skew, per good (KTD5/KTD4): a city with no
+  // qualifying district in range multiplies by exactly 1 for every good, so
+  // pre-milestone traffic numbers are a regression case of this same code
+  // path, not a special one.
   for (const city of state.cities) {
-    const multiplier = districtTrafficMultiplier(state, city);
+    const mix = trafficMixByGood(state, city);
     for (const good of CITY_SUPPLIED_GOODS) {
       const rate = city.demand[good] ?? 0;
       if (rate <= 0) continue;
+      const multiplier = mix[good as TrafficGood];
       city.supply[good] = Math.min(CITY_SUPPLY_CAP, (city.supply[good] ?? 0) + rate * multiplier * dtDays);
     }
   }

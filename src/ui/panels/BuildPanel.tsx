@@ -1,4 +1,15 @@
-export type BuildMode = 'none' | 'survey' | 'station' | 'train';
+import type { StationType } from '../../sim/model/track.ts';
+
+export type BuildMode = 'none' | 'survey' | 'station' | 'train' | 'move';
+
+/** The three station types a picker offers, in the order they're shown
+ *  (milestone 5 U1, R4). `'mixed'` is listed first — it's the default the
+ *  picker starts on (KTD3). */
+export const STATION_TYPE_OPTIONS: { value: StationType; label: string }[] = [
+  { value: 'mixed', label: 'Mixed Depot' },
+  { value: 'freight', label: 'Freight Yard' },
+  { value: 'passenger', label: 'Passenger Terminal' },
+];
 
 /**
  * Build-mode toggle (U5; 'track' renamed to 'survey' in milestone 3 U6).
@@ -8,13 +19,28 @@ export type BuildMode = 'none' | 'survey' | 'station' | 'train';
  * `SurveyController` instead of dispatching track segments directly — see
  * `main.ts` and `SurveyPanel.tsx`. Kept deliberately minimal — the build
  * logic and validation live in the sim model, not here.
+ *
+ * Milestone 5 U1 (R4, KTD3): while station mode is armed, a type picker
+ * appears alongside the mode buttons so the type is chosen before the
+ * player clicks the map — `main.ts` reads `stationType` at click time and
+ * threads it into the `buildStation` intent.
+ *
+ * Milestone 5 U7 (R11, KTD8): 'move' is a minimal relocation affordance —
+ * no new panel, per the plan's own Assumptions. The two-click flow (select
+ * a station, then click its new site) is boot-scope interaction state that
+ * lives in `main.ts`, the same way survey mode's pending waypoints do; this
+ * panel only arms the mode and shows a static instruction while it's active.
  */
 export function BuildPanel({
   mode,
   onModeChange,
+  stationType,
+  onStationTypeChange,
 }: {
   mode: BuildMode;
   onModeChange: (m: BuildMode) => void;
+  stationType: StationType;
+  onStationTypeChange: (t: StationType) => void;
 }) {
   const button = (m: BuildMode, label: string) => (
     <button
@@ -33,10 +59,35 @@ export function BuildPanel({
   );
 
   return (
-    <div style={{ display: 'flex', gap: 6 }}>
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
       {button('survey', 'Survey Route')}
       {button('station', 'Build Station')}
+      {button('move', 'Move Station')}
       {button('train', 'Buy Train')}
+      {mode === 'move' && (
+        <span style={{ color: '#e0e1dd', fontSize: 12, opacity: 0.85 }}>
+          Click a station, then click its new site (full price, no refund).
+        </span>
+      )}
+      {mode === 'station' && (
+        <select
+          value={stationType}
+          onChange={(e) => onStationTypeChange(e.target.value as StationType)}
+          style={{
+            padding: '4px 6px',
+            borderRadius: 6,
+            border: '1px solid #e0e1dd',
+            background: '#1b263b',
+            color: '#e0e1dd',
+          }}
+        >
+          {STATION_TYPE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

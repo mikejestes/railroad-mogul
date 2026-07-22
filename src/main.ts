@@ -12,6 +12,7 @@ import { GameStore } from './store/gameStore.ts';
 import { applyIntent } from './store/applyIntents.ts';
 import { GameClock } from './sim/clock.ts';
 import { installDebugHook } from './dev/debugHook.ts';
+import { DEFAULT_STATION_TYPE, type StationType } from './sim/model/track.ts';
 
 /**
  * Entry point. Wires the whole game together (U10/U12, camera U1):
@@ -108,6 +109,15 @@ async function boot() {
   // threshold, so dragging the map never also surveys a waypoint or drops a
   // station.
   let buildMode: BuildMode = 'none';
+  // Milestone 5 U1 (R4, KTD3): the type picked in BuildPanel for the *next*
+  // buildStation click — boot-scope view state, same status as `buildMode`,
+  // never GameState (App.tsx's docblock).
+  let stationType: StationType = DEFAULT_STATION_TYPE;
+  // Milestone 5 U7 (R11, KTD8): the station id picked by the first click of
+  // a move-mode gesture — boot-scope view state, same status as `stationType`
+  // above, cleared on any mode change (`onBuildModeChange` below) the same
+  // way a pending survey is.
+  let selectedStationForMove: string | null = null;
   const survey = new SurveyController();
   const canvas = renderer.app.canvas as HTMLCanvasElement;
   let lastPointer = { x: 0, y: 0 };
@@ -143,9 +153,20 @@ async function boot() {
     if (exceedsClickThreshold(dragTotal.dx, dragTotal.dy)) return; // was a pan, not a click
     const { x, y } = tileAt(e.clientX, e.clientY);
     if (buildMode === 'station') {
-      store.dispatch({ kind: 'buildStation', x, y, radius: 2 });
+      store.dispatch({ kind: 'buildStation', x, y, radius: 2, stationType });
     } else if (buildMode === 'survey') {
       survey.click({ x, y });
+    } else if (buildMode === 'move') {
+      // First click selects a station at the clicked tile; second click
+      // (anywhere else) relocates it there. Clicking empty ground before any
+      // station is selected is a no-op, not an error (R11's minimal UI).
+      if (selectedStationForMove === null) {
+        const hit = store.getState().stations.find((s) => s.x === x && s.y === y);
+        if (hit) selectedStationForMove = hit.id;
+      } else {
+        store.dispatch({ kind: 'moveStation', stationId: selectedStationForMove, x, y });
+        selectedStationForMove = null;
+      }
     }
   });
   // Esc cancels a pending survey (the state diagram's Proposing -> Idle),
@@ -192,7 +213,11 @@ async function boot() {
         onBuildModeChange: (mode: BuildMode) => {
           buildMode = mode;
           survey.reset(); // any mode change clears any pending survey/overlay (both directions)
+          selectedStationForMove = null; // any mode change clears a pending move selection too
           canvas.style.cursor = mode === 'none' ? 'default' : 'crosshair';
+        },
+        onStationTypeChange: (t: StationType) => {
+          stationType = t;
         },
         onSurveyCommit: commitSurvey,
         onSurveyCancel: () => survey.reset(),

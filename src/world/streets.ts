@@ -1,5 +1,19 @@
-import type { District } from '../sim/model/districts.ts';
-import { districtHealth, blockGranularity, ageVariety } from '../sim/model/districts.ts';
+import type { District, Cut } from '../sim/model/districts.ts';
+import {
+  districtHealth,
+  blockGranularity,
+  ageVariety,
+  DISTRICT_FOOTPRINT_TILES,
+  distanceToChord,
+} from '../sim/model/districts.ts';
+import type { GameState } from '../sim/state.ts';
+import {
+  landValueAt,
+  TERRAIN_BASE_CENTS,
+  STATION_UPLIFT_BASE_CENTS,
+  STATION_UPLIFT_DEV_BONUS_CENTS,
+  DISTRICT_DEVELOPMENT_UPLIFT_CENTS,
+} from '../sim/model/landValue.ts';
 
 /**
  * Street-scene generation (M4 U6, KTD8, R2/R9/R11/R12). `generateDistrictScene`
@@ -31,6 +45,15 @@ import { districtHealth, blockGranularity, ageVariety } from '../sim/model/distr
  * the invariants that matter are determinism, quantization stability,
  * boundedness, and record-conditioned variety (AE1) — the aesthetic itself
  * is free to change without touching those.
+ *
+ * Milestone 5 U4 (R7/R8/R10, KTD10): `district.cuts` condition the scene —
+ * every parcel within `SEVERANCE_SCENE_RADIUS_FRAC` of a cut's rescaled
+ * chord (`cutsToSceneSpace`) is forced vacant with no tall building classes,
+ * the border vacuum made visible. `district.cuts` is *not* quantized
+ * (unlike the continuous channels above) — it is already a discrete, bounded
+ * list that only ever grows by whole cuts, never drifts continuously, so
+ * there is no sub-quantum-change case to guard against the way there is for
+ * `development`/`residential`/etc.
  */
 
 // --- Quantization (KTD8) ---
@@ -43,6 +66,32 @@ export const QUANTUM = 1 / 16;
 function quantize(value: number): number {
   return Math.round(value / QUANTUM) * QUANTUM;
 }
+
+/** Milestone 5 U6 (R3, KTD8/KTD10): sampled `landValueAt` cents are
+ *  quantized to this coarse bucket before anything derives from them —
+ *  the same cache-stability discipline `QUANTUM` gives the continuous
+ *  channels above, applied to the newly-sampled value input, so a tick
+ *  that nudges a nearby district's development by a cent's worth of value
+ *  does not regenerate every scene that happens to sample near it. */
+export const VALUE_QUANTUM_CENTS = 50_00;
+
+function quantizeValueCents(cents: number): number {
+  return Math.round(cents / VALUE_QUANTUM_CENTS) * VALUE_QUANTUM_CENTS;
+}
+
+/** A "fully rich" anchor value, for normalizing `anchorValueCents` into the
+ *  0..1 `anchorValueFraction` `heightClassFor` blends in (KTD10) — the sum
+ *  of every positive uplift `landValueAt` can produce at a station's own
+ *  tile at full development, plus the richest terrain base. Not a hard cap
+ *  on `landValueAt` itself (overlapping catchments can exceed it) — only a
+ *  reference scale for this scene-level proxy, so `anchorValueFraction`
+ *  saturates near 1 for a genuinely well-served, well-developed district
+ *  rather than needing re-tuning whenever `landValueAt`'s own constants move. */
+const VALUE_RICHNESS_REFERENCE_CENTS =
+  Math.max(...Object.values(TERRAIN_BASE_CENTS)) +
+  STATION_UPLIFT_BASE_CENTS +
+  STATION_UPLIFT_DEV_BONUS_CENTS +
+  DISTRICT_DEVELOPMENT_UPLIFT_CENTS;
 
 export interface QuantizedChannels {
   development: number;
@@ -124,12 +173,29 @@ export interface StreetSegment {
   by: number;
 }
 
+/** An abandoned station site rendered into a district's scene (milestone 5
+ *  U7, R13, KTD9/KTD10) — the derelict-yard element, distinct from the
+ *  vacuum band a *cut* produces (U4): a single point scar, not a line. */
+export interface DerelictYard {
+  /** World-tile-space center. */
+  x: number;
+  y: number;
+  /** World-tile-space radius the yard's abandoned-lot mark occupies. */
+  size: number;
+}
+
 export interface DistrictScene {
   districtId: string;
   /** World-tile-space station square. */
   stationSquare: { x: number; y: number; size: number };
   streets: StreetSegment[];
   footprints: Footprint[];
+  /** Abandoned station sites within this scene's rendered extent (milestone
+   *  5 U7, R13) — permanent scars a relocation leaves behind, drawn as an
+   *  abandoned yard. Bounded by construction: only `state.derelictSites`
+   *  within `extent` of the anchor are included, and that list itself is
+   *  bounded by how many times stations have ever been moved. */
+  derelictYards: DerelictYard[];
 }
 
 // --- Bounded, development-driven scene parameters ---
@@ -161,6 +227,68 @@ export const MAX_BLOCKS = 24;
 
 /** Vacancy rate at health = 0; scales linearly to 0 at health = 1 (R8). */
 export const VACANCY_MAX_RATE = 0.5;
+
+// --- Severance conditioning (milestone 5 U4, R7/R8/R10, KTD10) -------------
+//
+// `District.cuts` (`sim/model/districts.ts`, U3) are recorded in *world*
+// tile coordinates, at distances from the anchor up to `DISTRICT_FOOTPRINT_
+// TILES` (6 tiles) — far outside the scene's own stylized radius (at most
+// `MAX_EXTENT_TILES` = 1 tile, per the plan's Assumptions: the rendered
+// scene is a non-literal stylization, not a to-scale map). A cut plotted at
+// its raw world distance from the anchor would almost never land inside any
+// parcel's stylized position. `cutsToSceneSpace` rescales every cut the same
+// way `severancePenalty`'s centrality term does — as a *fraction* of
+// `DISTRICT_FOOTPRINT_TILES` — onto the scene's own `extent`, so a cut
+// through the anchor lands at the scene's center and a cut at the
+// footprint's edge lands at the scene's edge, preserving relative position
+// across the scale mismatch.
+
+/** A cut's chord in scene-relative space (anchor at the origin, scaled into
+ *  the district's rendered `extent`) — the same space `generateDistrictScene`
+ *  places footprint offsets in before adding the anchor back. */
+export interface SceneCut {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+}
+
+/** Rescale `cuts` (world-coordinate chords, `sim/model/districts.ts`) into
+ *  scene-relative space for a district whose rendered radius is `extent`.
+ *  Pure; exported so the rescaling itself is independently testable (KTD7,
+ *  no-rendering-tests policy). */
+export function cutsToSceneSpace(cuts: readonly Cut[], anchor: { x: number; y: number }, extent: number): SceneCut[] {
+  const scale = extent / DISTRICT_FOOTPRINT_TILES;
+  return cuts.map((c) => ({
+    ax: (c.ax - anchor.x) * scale,
+    ay: (c.ay - anchor.y) * scale,
+    bx: (c.bx - anchor.x) * scale,
+    by: (c.by - anchor.y) * scale,
+  }));
+}
+
+/** Vacuum-band half-width, as a fraction of the district's rendered
+ *  `extent` (R8/R10) — a parcel within this distance of any cut, in
+ *  scene-relative space, reads as the border vacuum: forced vacant, no tall
+ *  building classes. Deliberately a fraction of `extent` (not a fixed world-
+ *  tile radius) so the band scales with the same stylization every other
+ *  scene-relative quantity here does. */
+export const SEVERANCE_SCENE_RADIUS_FRAC = 0.12;
+
+/** Whether scene-relative point `(bx, by)` falls within the vacuum band of
+ *  any cut in `sceneCuts` (R7/R8/R10). Pure — the logic under the
+ *  no-rendering-tests policy (KTD7); `generateDistrictScene` just applies
+ *  its answer to `vacant`/`heightClass`. */
+export function parcelInVacuum(bx: number, by: number, sceneCuts: readonly SceneCut[], radius: number): boolean {
+  return sceneCuts.some((c) => distanceToChord(bx, by, c) <= radius);
+}
+
+/** Derelict-yard blight radius, as a fraction of the district's rendered
+ *  `extent` (milestone 5 U7, R13, KTD9/KTD10) — the same stylized-fraction
+ *  treatment `SEVERANCE_SCENE_RADIUS_FRAC` gets, sized a little larger: an
+ *  abandoned yard is a single point scar rather than a line, so its blight
+ *  needs more radius to read as a real presence in the scene. */
+export const DERELICT_SCENE_RADIUS_FRAC = 0.18;
 
 function lerp(a: number, b: number, t: number): number {
   const clamped = Math.min(1, Math.max(0, t));
@@ -200,10 +328,21 @@ function pickUse(q: QuantizedChannels, roll: number, radiusFrac: number): Buildi
   return 'industrial';
 }
 
-function heightClassFor(density: number, jitter: number): number {
+/** Milestone 5 U6 (R3, KTD10): `valueFactor` (0..1, this parcel's quantized
+ *  land value as a fraction of the scene's own anchor value) adds up to half
+ *  a height class on top of the density-driven base — value and built form
+ *  move together, without letting value alone override what the district's
+ *  own density channel supports (`valueFactor` defaults to 0: byte-identical
+ *  to milestone 4's formula for any caller that doesn't pass it). */
+function heightClassFor(density: number, jitter: number, valueFactor = 0): number {
   const base = density * (HEIGHT_CLASSES - 1);
-  const jittered = base + (jitter - 0.5);
+  const valueBonus = clamp01(valueFactor) * (HEIGHT_CLASSES - 1) * 0.5;
+  const jittered = base + valueBonus + (jitter - 0.5);
   return Math.min(HEIGHT_CLASSES - 1, Math.max(0, Math.round(jittered)));
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 function ageClassFor(ageVarietyScore: number, jitter: number): number {
@@ -212,18 +351,39 @@ function ageClassFor(ageVarietyScore: number, jitter: number): number {
 }
 
 /**
- * Generate a district's street scene (M4 U6, KTD8). Pure: the same
- * (seed, district, anchor) always produces a deep-equal scene; the sim
+ * Generate a district's street scene (M4 U6, KTD8; milestone 5 U6 adds
+ * `state`/value sampling, KTD10). Pure: the same (seed, district, anchor,
+ * state's relevant inputs) always produces a deep-equal scene; the sim
  * stores none of this. `seed` is expected to be `state.rng.seed` (plain
  * data — see module docblock), never `state.rng` itself.
+ *
+ * Milestone 5 U6 (R3, KTD10): `state` is sampled through `landValueAt`
+ * (`sim/model/landValue.ts`) exactly once per scene, at the anchor — the
+ * district's own peak value, quantized to `VALUE_QUANTUM_CENTS` before use
+ * (the same cache-stability discipline `QUANTUM` gives the continuous
+ * channels, applied at a single clean sample point rather than once per
+ * parcel, so "does this scene need to regenerate" stays as simple a
+ * question for value as it already is for `development`). Per-parcel height
+ * then blends that one sampled richness against the parcel's own distance
+ * from the anchor (`radiusFrac`, already computed for `pickUse`'s
+ * commercial-near-the-station bias) — value peaks at the anchor in
+ * `landValueAt` itself (station-uplift, district-development), so re-using
+ * the same positional falloff here is a faithful, far cheaper proxy for
+ * literally re-sampling every parcel's own coordinate. `landValueAt` is a
+ * read-only query (KTD2) — sampling it here, any number of times, never
+ * mutates `state` or grows the save (the same purity guarantee terrain
+ * sampling and district-scene generation have always had).
  */
 export function generateDistrictScene(
   seed: number,
   district: District,
   anchor: { x: number; y: number },
+  state: GameState,
 ): DistrictScene {
   const q = quantizeDistrict(district);
   const idHash = hashString(district.id);
+  const anchorValueCents = quantizeValueCents(landValueAt(state, anchor.x, anchor.y).totalCents);
+  const anchorValueFraction = clamp01(anchorValueCents / VALUE_RICHNESS_REFERENCE_CENTS);
 
   // Derive the four Jacobs-generator inputs from a shape that carries the
   // quantized continuous fields but the record's real (already-discrete)
@@ -266,6 +426,33 @@ export function generateDistrictScene(
     blockRadii.push(lerp(extent * 0.35, extent, hash01(seed, idHash, 3, b)));
   }
 
+  // Severance conditioning (milestone 5 U4, R7/R8/R10): rescale this
+  // district's permanent cuts into the same scene-relative space parcel
+  // offsets are computed in, once per scene (not once per parcel).
+  const sceneCuts = cutsToSceneSpace(district.cuts, anchor, extent);
+  const vacuumRadius = extent * SEVERANCE_SCENE_RADIUS_FRAC;
+
+  // Derelict yards (milestone 5 U7, R13, KTD9/KTD10): every abandoned
+  // station site within this district's footprint, rescaled into scene
+  // space the same proportional way cuts are (KTD1's footprint-to-extent
+  // stylization) — `state.derelictSites` is global, so this filters to the
+  // ones this particular scene actually reaches. `relDerelictYards` (anchor-
+  // relative offsets) drives the per-parcel proximity check below;
+  // `derelictYards` (absolute anchor+offset, matching every other DistrictScene
+  // element's coordinate convention) is what the renderer draws.
+  const derelictScale = extent / DISTRICT_FOOTPRINT_TILES;
+  const relDerelictYards: { x: number; y: number }[] = [];
+  const derelictYards: DerelictYard[] = [];
+  for (const site of state.derelictSites) {
+    const distFromAnchor = Math.max(Math.abs(site.x - anchor.x), Math.abs(site.y - anchor.y));
+    if (distFromAnchor > DISTRICT_FOOTPRINT_TILES) continue;
+    const relX = (site.x - anchor.x) * derelictScale;
+    const relY = (site.y - anchor.y) * derelictScale;
+    relDerelictYards.push({ x: relX, y: relY });
+    derelictYards.push({ x: anchor.x + relX, y: anchor.y + relY, size: Math.max(extent * 0.06, 0.006) });
+  }
+  const derelictRadius = extent * DERELICT_SCENE_RADIUS_FRAC;
+
   const footprints: Footprint[] = [];
   const parcelSize = Math.max(0.006, extent / Math.sqrt(buildingCount + 1) / 3);
   for (let i = 0; i < buildingCount; i++) {
@@ -284,6 +471,23 @@ export function generateDistrictScene(
     const heightJitter = hash01(seed, idHash, 8, i);
     const ageJitter = hash01(seed, idHash, 9, i);
     const vacancyRoll = hash01(seed, idHash, 10, i);
+    // R7/R8/R10: a parcel along a cut is the border vacuum — forced vacant,
+    // no tall building classes — regardless of what health-driven vacancy,
+    // density, or value would otherwise have drawn there (U4's local
+    // conditioning wins over U6's value-form coupling, per KTD10). A parcel
+    // near a derelict yard reads the same way (U7, R13, KTD9's "depresses...
+    // scene condition"): both are permanent, local scars.
+    const severed = parcelInVacuum(bx, by, sceneCuts, vacuumRadius);
+    const nearDerelict = relDerelictYards.some((y) => Math.hypot(bx - y.x, by - y.y) <= derelictRadius);
+    const blighted = severed || nearDerelict;
+
+    // Milestone 5 U6 (R3, KTD10): blend the scene's one sampled richness
+    // (`anchorValueFraction`) against this parcel's own distance from the
+    // anchor — value and built form move together, and (since `landValueAt`
+    // itself peaks at the anchor) a parcel near the station reads richer
+    // than a fringe parcel of the same district.
+    const positionalRichness = 1 - radiusFrac * 0.8;
+    const valueFactor = blighted ? 0 : clamp01(anchorValueFraction * positionalRichness);
 
     footprints.push({
       rect: {
@@ -292,10 +496,10 @@ export function generateDistrictScene(
         width: parcelSize,
         height: parcelSize,
       },
-      heightClass: heightClassFor(q.density, heightJitter),
+      heightClass: blighted ? 0 : heightClassFor(q.density, heightJitter, valueFactor),
       use,
       ageClass: ageClassFor(age, ageJitter),
-      vacant: vacancyRoll < (1 - health) * VACANCY_MAX_RATE,
+      vacant: blighted ? true : vacancyRoll < (1 - health) * VACANCY_MAX_RATE,
     });
   }
 
@@ -304,5 +508,6 @@ export function generateDistrictScene(
     stationSquare: { x: anchor.x, y: anchor.y, size: STATION_SQUARE_SIZE },
     streets,
     footprints,
+    derelictYards,
   };
 }

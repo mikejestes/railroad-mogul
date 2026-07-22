@@ -70,6 +70,16 @@ export function deserializeSave(json: string): GameState {
  * one would silently invent built form the player never earned. Same
  * rationale, and the same "safe because no save path ships yet" argument, as
  * v1 -> v2: `migrate` refuses the mismatch rather than guessing.
+ *
+ * v4 -> v5 (station siting/severance milestone U7, KTD11): schema 5 adds
+ * `Station.stationType` (optional, so this alone wouldn't force a bump),
+ * `District.cuts`, and `state.derelictSites`. `cuts` and `derelictSites` are
+ * permanent, path-dependent history — which infrastructure severed a
+ * district, and when a station was abandoned — that a v4 save never
+ * recorded, so there is nothing to synthesize either from; a v4 district's
+ * `cuts` can only honestly be `[]`, which would silently understate real
+ * severance a v4 save's own track/station data could imply, the same
+ * "refuse rather than guess" rationale as every prior bump.
  */
 function migrate(state: GameState, fromVersion: number): GameState {
   if (fromVersion === SCHEMA_VERSION) return state;

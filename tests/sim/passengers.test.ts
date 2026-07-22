@@ -5,7 +5,7 @@ import { productionSystem, CITY_SUPPLY_CAP } from '../../src/sim/systems/product
 import { demandSystem } from '../../src/sim/systems/demand.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
 import { makeTrain } from '../../src/sim/model/trains.ts';
-import { makeDistrict, EPISODE_TARGET, AGE_SPAN_DAYS } from '../../src/sim/model/districts.ts';
+import { makeDistrict, EPISODE_TARGET, AGE_SPAN_DAYS, DENSITY_PLATEAU } from '../../src/sim/model/districts.ts';
 
 describe('passengers & mail', () => {
   it('cities generate passenger and mail supply from population, up to a cap', () => {
@@ -131,5 +131,54 @@ describe('district health feeds back into passenger/mail traffic (M4 U5, KTD5)',
     }
     expect(cityA.supply.passengers).toBeCloseTo(cityB.supply.passengers!, 9);
     expect(cityA.backlog.passengers).toBeCloseTo(cityB.backlog.passengers!, 9);
+  });
+});
+
+describe('station-type traffic skew fires end-to-end through production/demand (milestone 5 fix, AE2 traffic arm)', () => {
+  // Neutral jacobsHealth (exactly HEALTH_NEUTRAL) so the health-deviation
+  // term in the traffic multiplier contributes zero and only the
+  // station-type skew (STATION_TYPE_TRAFFIC_WEIGHTS) can explain any
+  // difference in generated traffic — same fixture shape as
+  // districts.test.ts's AE2 unit test, but exercised through the real
+  // per-tick systems (productionSystem/demandSystem) instead of calling
+  // districtTrafficMultiplier directly, since that is where the bug lived:
+  // production.ts/demand.ts called the multiplier without `good`, so the
+  // skew never reached actual play regardless of what the unit-level
+  // multiplier test proved.
+  function neutralHealthDistrict(id: string, stationId: string, x: number, y: number) {
+    const d = makeDistrict(id, { id: stationId, x, y });
+    d.residential = 1 / 3;
+    d.commercial = 1 / 3;
+    d.industrial = 1 / 3;
+    d.density = DENSITY_PLATEAU / 2;
+    d.development = 0.5;
+    return d;
+  }
+
+  it('a passenger-terminal city and a freight-yard city of equal health generate measurably different passenger and mail traffic', () => {
+    const freight = createGameState(1);
+    const freightCity = makeCity('c', 'C', 0, 0, 1);
+    freight.cities.push(freightCity);
+    freight.stations.push({ id: 'stn-f', x: 0, y: 0, radius: 2, stationType: 'freight' });
+    freight.districts.push(neutralHealthDistrict('dst-f', 'stn-f', 0, 0));
+
+    const passenger = createGameState(1);
+    const passengerCity = makeCity('c', 'C', 0, 0, 1);
+    passenger.cities.push(passengerCity);
+    passenger.stations.push({ id: 'stn-p', x: 0, y: 0, radius: 2, stationType: 'passenger' });
+    passenger.districts.push(neutralHealthDistrict('dst-p', 'stn-p', 0, 0));
+
+    // Few enough ticks that neither city's supply/backlog saturates its cap
+    // — saturation would erase the very difference this test measures.
+    for (let i = 0; i < 5; i++) {
+      tick(freight, 1, [productionSystem, demandSystem]);
+      tick(passenger, 1, [productionSystem, demandSystem]);
+    }
+
+    // freight: passengers *0.7, mail *1.3 — passenger: passengers *1.3, mail *0.7.
+    expect(passengerCity.supply.passengers!).toBeGreaterThan(freightCity.supply.passengers!);
+    expect(freightCity.supply.mail!).toBeGreaterThan(passengerCity.supply.mail!);
+    expect(passengerCity.backlog.passengers!).toBeGreaterThan(freightCity.backlog.passengers!);
+    expect(freightCity.backlog.mail!).toBeGreaterThan(passengerCity.backlog.mail!);
   });
 });

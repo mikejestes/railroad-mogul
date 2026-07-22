@@ -7,16 +7,22 @@ import {
   inCatchment,
   industriesInCatchment,
   TRACK_COST_PER_SEGMENT,
+  STATION_COST,
   effectiveGrade,
   gradeWeightMultiplier,
   segmentWeight,
   GRADE_WEIGHT_FACTOR,
+  stationTypeOf,
+  DEFAULT_STATION_TYPE,
+  moveStation,
   type TrackSegment,
+  type StationType,
 } from '../../src/sim/model/track.ts';
 import { CUTTING_MAX_GRADE } from '../../src/sim/model/trackCost.ts';
 import { moveCostFor, terrainAt } from '../../src/world/geography.ts';
 import { makeIndustry } from '../../src/sim/model/industries.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
+import { serialize } from '../../src/sim/state.ts';
 
 // Local factory: a small buildable world. U2 replaced the box-derived terrain
 // model with continuous field classification (`geography.ts`), and U3
@@ -80,6 +86,49 @@ describe('track building', () => {
   });
 });
 
+describe('station type (milestone 5 U1, R4/R6, KTD3)', () => {
+  it('buildStation defaults to the mixed type when none is given', () => {
+    const s = buildableWorld(4, 4);
+    buildStation(s, 'stn-0', OX, OY, 2);
+    expect(s.stations[0].stationType).toBe('mixed');
+    expect(s.stations[0].stationType).toBe(DEFAULT_STATION_TYPE);
+  });
+
+  it('storing each type end to end: buildStation stores exactly the type it was given', () => {
+    const types: StationType[] = ['freight', 'passenger', 'mixed'];
+    const s = buildableWorld(10, 10);
+    types.forEach((stationType, i) => {
+      buildStation(s, `stn-${i}`, OX + i, OY, 1, stationType);
+    });
+    expect(s.stations.map((st) => st.stationType)).toEqual(types);
+  });
+
+  it('type round-trips through JSON serialization unchanged', () => {
+    const s = buildableWorld(4, 4);
+    buildStation(s, 'stn-0', OX, OY, 2, 'freight');
+    const round = JSON.parse(JSON.stringify(s.stations[0])) as { stationType: StationType };
+    expect(round.stationType).toBe('freight');
+  });
+
+  it("radius and cost are unaffected by type (independent-axes guard, KTD3)", () => {
+    const types: StationType[] = ['freight', 'passenger', 'mixed'];
+    for (const stationType of types) {
+      const s = buildableWorld(4, 4);
+      const before = s.moneyCents;
+      buildStation(s, 'stn', OX, OY, 3, stationType);
+      expect(before - s.moneyCents).toBe(STATION_COST[2]);
+      expect(s.stations[0].radius).toBe(3);
+    }
+  });
+
+  it('stationTypeOf falls back to the default for a station with no stored type (pre-M5 fixture compatibility)', () => {
+    const untyped = { id: 's', x: 0, y: 0, radius: 1 };
+    expect(stationTypeOf(untyped)).toBe(DEFAULT_STATION_TYPE);
+    const typed = { id: 's', x: 0, y: 0, radius: 1, stationType: 'freight' as const };
+    expect(stationTypeOf(typed)).toBe('freight');
+  });
+});
+
 describe('effectiveGrade and grade-aware segmentWeight (milestone 3 U5, KTD4/KTD5/KTD8, R11)', () => {
   // Real, non-sea adjacent pairs at the DEFAULT_TERRAIN_SEED fallback (this
   // file never calls configureTerrainSeed, same convention as OX/OY above):
@@ -135,5 +184,93 @@ describe('effectiveGrade and grade-aware segmentWeight (milestone 3 U5, KTD4/KTD
     const b = moveCostFor(terrainAt(STEEP.bx, STEEP.by));
     const preGradeFormula = dist * ((a + b) / 2);
     expect(segmentWeight({ width: 0, height: 0 }, tunneled)).toBeCloseTo(preGradeFormula, 9);
+  });
+});
+
+describe('moveStation (milestone 5 U7, R11/R12/R13, KTD8)', () => {
+  it('charges the full station cost (no refund), preserves id/radius/stationType, and moves the position', () => {
+    const s = buildableWorld(10, 10);
+    buildStation(s, 'stn-0', OX, OY, 3, 'freight');
+    const beforeMoney = s.moneyCents;
+
+    const ok = moveStation(s, 'stn-0', OX + 2, OY);
+    expect(ok).toBe(true);
+    expect(beforeMoney - s.moneyCents).toBe(STATION_COST[2]); // radius-3 cost, same table buildStation used
+
+    const station = s.stations[0];
+    expect(station.id).toBe('stn-0');
+    expect(station.radius).toBe(3);
+    expect(station.stationType).toBe('freight');
+    expect(station.x).toBe(OX + 2);
+    expect(station.y).toBe(OY);
+  });
+
+  it('AE4: appends a permanent derelict record at the OLD tile', () => {
+    const s = buildableWorld(10, 10);
+    buildStation(s, 'stn-0', OX, OY, 2);
+    expect(s.derelictSites).toHaveLength(0);
+
+    moveStation(s, 'stn-0', OX + 3, OY);
+    expect(s.derelictSites).toHaveLength(1);
+    expect(s.derelictSites[0]).toEqual({ x: OX, y: OY, day: s.timeDays });
+  });
+
+  it('records a new STATION_CUT_STRENGTH cut at the new site (into a pre-existing neighboring district)', () => {
+    const s = buildableWorld(10, 10);
+    buildStation(s, 'stn-0', OX, OY, 2);
+    const neighbor = { id: 'dst-neighbor', stationId: 'other', anchorX: OX + 3, anchorY: OY, residential: 0, commercial: 0, industrial: 0, density: 0, development: 0, firstGrowthDay: null, lastGrowthDay: null, episodeCount: 0, lastDeliveryDay: null, cuts: [] };
+    s.districts.push(neighbor);
+
+    moveStation(s, 'stn-0', OX + 3, OY);
+    expect(neighbor.cuts.length).toBeGreaterThan(0);
+  });
+
+  it('an unaffordable move leaves state byte-identical (no partial charge, no derelict record)', () => {
+    const s = buildableWorld(10, 10);
+    buildStation(s, 'stn-0', OX, OY, 2);
+    s.moneyCents = 0;
+    const before = serialize(s);
+
+    const ok = moveStation(s, 'stn-0', OX + 3, OY);
+    expect(ok).toBe(false);
+    expect(serialize(s)).toBe(before);
+  });
+
+  it('a sea-tile move leaves state byte-identical', () => {
+    const s = buildableWorld(10, 10);
+    buildStation(s, 'stn-0', OX, OY, 2);
+    const before = serialize(s);
+
+    // x=0 sits west of every authored landmass box at any latitude — always
+    // sea (see tests/sim/track.test.ts's own OX/OY note above).
+    const ok = moveStation(s, 'stn-0', 0, OY);
+    expect(ok).toBe(false);
+    expect(serialize(s)).toBe(before);
+  });
+
+  it('a move to the same tile is refused (not a free no-op charge)', () => {
+    const s = buildableWorld(10, 10);
+    buildStation(s, 'stn-0', OX, OY, 2);
+    const before = serialize(s);
+    expect(moveStation(s, 'stn-0', OX, OY)).toBe(false);
+    expect(serialize(s)).toBe(before);
+  });
+
+  it('moving an unknown station id is a no-op', () => {
+    const s = buildableWorld(10, 10);
+    const before = serialize(s);
+    expect(moveStation(s, 'ghost', OX + 1, OY)).toBe(false);
+    expect(serialize(s)).toBe(before);
+  });
+
+  it('the public API offers no derelict-site-removal function (structural never-heals guard)', async () => {
+    const mod = (await import('../../src/sim/model/track.ts')) as Record<string, unknown>;
+    for (const name of Object.keys(mod)) {
+      expect(name.toLowerCase()).not.toMatch(/remove.*derelict|clear.*derelict|delete.*derelict/);
+    }
+    const stateMod = (await import('../../src/sim/state.ts')) as Record<string, unknown>;
+    for (const name of Object.keys(stateMod)) {
+      expect(name.toLowerCase()).not.toMatch(/remove.*derelict|clear.*derelict|delete.*derelict/);
+    }
   });
 });

@@ -2,10 +2,10 @@ import type { System } from '../tick.ts';
 import type { GameState } from '../state.ts';
 import { GOODS, RECIPES, type GoodId } from '../model/goods.ts';
 import { addMoney } from '../state.ts';
-import { citiesInCatchment, industriesInCatchment, type Station } from '../model/track.ts';
+import { citiesInCatchment, industriesInCatchment, stationTypeOf, type Station } from '../model/track.ts';
 import { departTrain } from './movement.ts';
 import { engineById, totalCargo, type Train } from '../model/trains.ts';
-import { accrueDelivery } from '../model/districts.ts';
+import { accrueDelivery, activeDistrictFor } from '../model/districts.ts';
 
 /**
  * Delivery & the demand-coupled fee model (U7, KTD4) — the mechanic everything
@@ -25,6 +25,11 @@ import { accrueDelivery } from '../model/districts.ts';
  * or a starved processor at its input cap) accrues nothing. This is what
  * keeps a district a readout of *useful* delivery history rather than
  * something farmable by dumping unwanted goods at a station.
+ *
+ * Milestone 5 U2 (KTD4): both `accrueDelivery` call sites in `unloadCargo`
+ * now pass `stationTypeOf(station)`, so what a station *is* — freight yard,
+ * passenger terminal, mixed depot — scales the accrual the same delivery
+ * would otherwise produce (`STATION_TYPE_MODIFIERS`, `model/districts.ts`).
  */
 export interface FeeInputs {
   good: GoodId;
@@ -85,7 +90,12 @@ export const deliverySystem: System = (state) => {
 
 function unloadCargo(state: GameState, train: Train, station: Station, day: number): void {
   const cities = citiesInCatchment(state, station);
-  const district = state.districts.find((d) => d.stationId === station.id);
+  // Milestone 5 U7 (KTD8): the *active* district for this station, not
+  // merely the first one sharing its id — after a beyond-footprint
+  // relocation, an abandoned district can share a stationId with the
+  // station's new (active) one, and only the active one should keep
+  // accruing deliveries.
+  const district = activeDistrictFor(state, station.id);
   const remaining: typeof train.cars = [];
 
   for (const car of train.cars) {
@@ -106,7 +116,7 @@ function unloadCargo(state: GameState, train: Train, station: Station, day: numb
       city.backlog[car.good] = backlog - take;
       city.fulfillment[car.good] = Math.min(1, (city.fulfillment[car.good] ?? 0) + take / (demandPerDay * PRESSURE_DAYS));
       qtyLeft -= take;
-      if (district) accrueDelivery(district, car.good, take, day);
+      if (district) accrueDelivery(district, car.good, take, day, stationTypeOf(station));
     }
 
     // 2. Feed a processor that consumes this good (paid a flat bulk fee), but
@@ -130,7 +140,7 @@ function unloadCargo(state: GameState, train: Train, station: Station, day: numb
           });
           addMoney(state, feed);
           qtyLeft -= accepted;
-          if (district) accrueDelivery(district, car.good, accepted, day);
+          if (district) accrueDelivery(district, car.good, accepted, day, stationTypeOf(station));
         }
       }
     }

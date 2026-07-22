@@ -11,10 +11,12 @@
  * so a second copy here would be exactly the kind of drift the repo's
  * "no rendering tests, cover the pure policy" discipline warns about.
  *
- * The cache key *is* the quantized derivation input (KTD8): a district's
- * scene is regenerated only when its id, the zoom tier, or its quantized
- * `development`/channel/`density` tuple actually changes — a tick that
- * nudges a channel by a sub-quantum amount reuses the resident texture.
+ * The cache key *is* the derivation input (KTD8): a district's scene is
+ * regenerated when its id, the zoom tier, its quantized
+ * `development`/channel/`density` tuple, its own `cuts.length`, or a nearby
+ * derelict-site count actually changes — a tick that nudges a channel by a
+ * sub-quantum amount (and touches none of the others) reuses the resident
+ * texture.
  *
  * Only the `street` tier mounts this layer (KTD7); `local` and below stay
  * pixel-identical to their pre-M4 marker rendering (`worldRenderer.ts`).
@@ -31,6 +33,7 @@ import type { Camera, Rect } from './camera.ts';
 import type { ZoomTierId } from './zoomTiers.ts';
 import type { GameState } from '../sim/state.ts';
 import type { District } from '../sim/model/districts.ts';
+import { DISTRICT_FOOTPRINT_TILES } from '../sim/model/districts.ts';
 import { quantizeDistrict, generateDistrictScene, extentTilesFor } from '../world/streets.ts';
 import { selectEvictable, type ChunkLruEntry } from './terrainChunks.ts';
 
@@ -78,14 +81,54 @@ export function districtsInView(
 }
 
 /**
- * A district's resident-texture cache key (KTD8): identity, tier, and the
- * exact quantized tuple `generateDistrictScene` derives its scene from — so
- * this key changes exactly when the scene it would regenerate does, no more
- * and no less.
+ * A district's resident-texture cache key (KTD8): identity, tier, the exact
+ * quantized tuple `generateDistrictScene` derives its scene from, the
+ * district's own `cuts.length`, and (via `nearbyDerelictCount`, below) a
+ * count of `state.derelictSites` within this district's footprint — so this
+ * key changes whenever any of those regeneration inputs does.
+ *
+ * Milestone 5 U7/U4 fix: this key used to omit `cuts`/derelict/land-value
+ * entirely, so a player laying track through their own district could go on
+ * not seeing the vacuum band their own cut just created until some unrelated
+ * channel happened to cross a quantum boundary — "a cut the player cannot
+ * see is a punishment, not a decision." `cuts.length` and a nearby-derelict
+ * count are cheap, monotonically-changing signals that fix exactly that: a
+ * fresh cut or a newly-appeared derelict site anywhere in the district's
+ * reach now invalidates the resident texture immediately. This is a
+ * rendering-only cache key — nothing here is stored in `GameState` or the
+ * save.
+ *
+ * Still-known limitation: this key has no term for `landValueAt` (U6) — a
+ * neighboring station's catchment newly overlapping this district's parcels
+ * can shift sampled land value with zero movement in any term above, so a
+ * resident texture can still go stale on that axis until the next
+ * channel/cut/derelict-driven regeneration. Noted here rather than silently
+ * accepted; the repo's no-rendering-tests policy leaves this class of key
+ * uncovered by tests either way.
  */
-export function districtSceneCacheKey(district: District, tier: ZoomTierId): string {
+export function districtSceneCacheKey(district: District, tier: ZoomTierId, nearbyDerelictCount: number = 0): string {
   const q = quantizeDistrict(district);
-  return `${district.id}:${tier}:${q.development}:${q.residential}:${q.commercial}:${q.industrial}:${q.density}`;
+  return `${district.id}:${tier}:${q.development}:${q.residential}:${q.commercial}:${q.industrial}:${q.density}:${district.cuts.length}:${nearbyDerelictCount}`;
+}
+
+/**
+ * Count of `state.derelictSites` within `district`'s footprint (Chebyshev,
+ * matching `world/streets.ts`'s own derelict-yard filter) — the cheap,
+ * renderer-only signal `districtSceneCacheKey` folds in so a derelict site
+ * appearing elsewhere on the map (any station relocation, anywhere) but
+ * landing inside this district's rendered extent invalidates its resident
+ * texture, even though nothing about this district's own record changed.
+ */
+export function nearbyDerelictCount(state: GameState, district: District): number {
+  let count = 0;
+  for (const site of state.derelictSites) {
+    if (
+      Math.max(Math.abs(site.x - district.anchorX), Math.abs(site.y - district.anchorY)) <= DISTRICT_FOOTPRINT_TILES
+    ) {
+      count++;
+    }
+  }
+  return count;
 }
 
 const USE_COLORS = {
@@ -97,6 +140,11 @@ const USE_COLORS = {
 const STREET_COLOR = 0x2a2a2a;
 const STATION_SQUARE_COLOR = 0xf1faee;
 const VACANT_ALPHA = 0.25;
+/** Milestone 5 U7 (R13): the abandoned-yard mark's color — a dull rust,
+ *  distinct from every building-use color and from the plain vacancy fade
+ *  (`VACANT_ALPHA`), so a derelict site reads as a different KIND of scar,
+ *  not just another empty building. */
+const DERELICT_YARD_COLOR = 0x6b3f2a;
 
 interface ResidentScene {
   texture: RenderTexture;
@@ -144,11 +192,11 @@ export class DistrictRenderer {
     const visibleKeys = new Set<string>();
 
     for (const district of inView) {
-      const key = districtSceneCacheKey(district, camera.tier);
+      const key = districtSceneCacheKey(district, camera.tier, nearbyDerelictCount(state, district));
       visibleKeys.add(key);
       let scene = this.resident.get(key);
       if (!scene) {
-        scene = this.generate(district, state.rng.seed);
+        scene = this.generate(district, state);
         this.resident.set(key, scene);
         this.container.addChild(scene.sprite);
       }
@@ -168,9 +216,9 @@ export class DistrictRenderer {
     }
   }
 
-  private generate(district: District, seed: number): ResidentScene {
+  private generate(district: District, state: GameState): ResidentScene {
     const anchor = { x: district.anchorX, y: district.anchorY };
-    const scene = generateDistrictScene(seed, district, anchor);
+    const scene = generateDistrictScene(state.rng.seed, district, anchor, state);
     const extentTiles = Math.max(extentTilesFor(quantizeDistrict(district).development), 0.05);
 
     const g = new Graphics();
@@ -208,6 +256,23 @@ export class DistrictRenderer {
     g.rect(stationPx.x, stationPx.y, Math.max(2, stationSizePx), Math.max(2, stationSizePx)).fill({
       color: STATION_SQUARE_COLOR,
     });
+
+    // Derelict yards (milestone 5 U7, R13): a dark X over a faint patch —
+    // the abandoned-yard scar, distinct from a vacant footprint's plain
+    // faded fill.
+    for (const yard of scene.derelictYards) {
+      const centerPx = worldToLocalPx(yard.x, yard.y);
+      const sizePx = Math.max(4, (yard.size / (extentTiles * 2)) * SCENE_TEXTURE_PX);
+      g.rect(centerPx.x - sizePx / 2, centerPx.y - sizePx / 2, sizePx, sizePx).fill({
+        color: DERELICT_YARD_COLOR,
+        alpha: 0.6,
+      });
+      g.moveTo(centerPx.x - sizePx / 2, centerPx.y - sizePx / 2)
+        .lineTo(centerPx.x + sizePx / 2, centerPx.y + sizePx / 2)
+        .moveTo(centerPx.x + sizePx / 2, centerPx.y - sizePx / 2)
+        .lineTo(centerPx.x - sizePx / 2, centerPx.y + sizePx / 2)
+        .stroke({ color: DERELICT_YARD_COLOR, width: 2 });
+    }
 
     const texture = RenderTexture.create({ width: SCENE_TEXTURE_PX, height: SCENE_TEXTURE_PX });
     this.renderer.render({ container: g, target: texture });

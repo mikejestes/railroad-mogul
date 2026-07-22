@@ -1,35 +1,72 @@
 import type { GameState } from '../sim/state.ts';
 import type { Intent } from './gameStore.ts';
-import { layTrack, buildStation, emitRoute, type Station } from '../sim/model/track.ts';
+import { layTrack, buildStation, emitRoute, moveStation, type Station } from '../sim/model/track.ts';
 import { availableEngines, currentYear, engineById, makeTrain } from '../sim/model/trains.ts';
 import { GOODS, type GoodId } from '../sim/model/goods.ts';
 import { addMoney } from '../sim/state.ts';
 import { surveyRoute } from '../sim/surveying.ts';
-import { makeDistrict } from '../sim/model/districts.ts';
+import {
+  makeDistrict,
+  recordCuts,
+  TRACK_CUT_STRENGTH,
+  DISTRICT_FOOTPRINT_TILES,
+  activeDistrictFor,
+  type Cut,
+} from '../sim/model/districts.ts';
 
 const ALL_GOODS = Object.keys(GOODS) as GoodId[];
 
 /**
- * Create a district for a newly built station (M4 U2, KTD10). Every station
- * gets one — rural stations included, per R1's "each station has a
- * district" and KTD10's station-town reading of a freight halt that stays a
- * hamlet until fed. Idempotent per station id (KTD10): calling this for a
- * station that already has a district is a silent no-op rather than a
- * duplicate, since the only caller (`applyIntent`'s `buildStation` case)
- * only reaches here after `buildStation` reports success, and success can
- * only ever mint a station id once (`state.nextStationId`).
+ * Create a district for a newly built (or relocated) station (M4 U2,
+ * KTD10). Every station gets one — rural stations included, per R1's "each
+ * station has a district" and KTD10's station-town reading of a freight
+ * halt that stays a hamlet until fed.
  *
- * Forward-compat note (plan Assumptions): this per-station-id idempotency
- * check is deliberately *not* a permanent invariant elsewhere in the
- * codebase — milestone 5's relocation rules narrow it to per-(station id,
- * anchor) once a station can move and leave its old district behind. Do not
- * add tests that treat per-station-id idempotency as load-bearing beyond
- * this milestone.
+ * Milestone 5 U7 (KTD8): idempotency narrows from per-station-id to
+ * per-(station id, CURRENT anchor) — the anchor this call would create a
+ * district at, i.e. the station's current tile. Calling this for a station
+ * that already has a district anchored exactly where the station currently
+ * sits is a silent no-op (unchanged from M4's behavior for any station that
+ * has never moved: its current tile *is* its original anchor). But once a
+ * station has relocated beyond its old district's footprint, its current
+ * tile no longer matches that old district's anchor, so this check no
+ * longer suppresses creation — a *second* district is created, anchored at
+ * the new site, while the old one (still carrying the same `stationId`, for
+ * historical attribution) is left exactly as it was (R14). The `moveStation`
+ * intent handler below is `ensureDistrict`'s only relocation-path caller,
+ * and only calls it when the move actually left the old footprint — see its
+ * own comment for the within-footprint case, which intentionally does not
+ * call this at all.
+ *
+ * Milestone 5 U3 (KTD7): a brand-new district backfills cuts from every
+ * *pre-existing* track segment that crosses its footprint — "the cut was
+ * physically there first." This routes through the same `recordCuts` helper
+ * `layTrack`/`buildStation`/`emitRoute` use (`sim/model/track.ts`), so build-
+ * time recording and creation-time backfill can never disagree about what
+ * counts as a cut. Deliberately does NOT also self-cut the new district from
+ * the station's own footprint: the anchor is the new district's dead center,
+ * so a universal self-cut there would be the worst possible centrality
+ * (KTD5, U4) for literally every station ever built, baking in a fixed
+ * penalty no siting choice could avoid — contrary to R10's "edge vs middle
+ * is a siting decision." `buildStation`/`moveStation` (`model/track.ts`)
+ * still record the station's footprint as a cut into any *other*,
+ * already-existing neighboring district it happens to fall inside.
  */
 export function ensureDistrict(state: GameState, station: Station): void {
-  if (state.districts.some((d) => d.stationId === station.id)) return;
+  if (state.districts.some((d) => d.stationId === station.id && d.anchorX === station.x && d.anchorY === station.y)) {
+    return;
+  }
   const id = `dst-${state.nextDistrictId++}`;
-  state.districts.push(makeDistrict(id, station));
+  const district = makeDistrict(id, station);
+  state.districts.push(district);
+  const chords: Cut[] = state.track.segments.map((seg) => ({
+    ax: seg.ax,
+    ay: seg.ay,
+    bx: seg.bx,
+    by: seg.by,
+    strength: TRACK_CUT_STRENGTH,
+  }));
+  recordCuts([district], chords);
 }
 
 /** Create a train on a route if the engine is available, affordable, and the
@@ -69,7 +106,7 @@ export function applyIntent(state: GameState, intent: Intent): void {
       break;
     case 'buildStation': {
       const id = `stn-${state.nextStationId++}`;
-      const built = buildStation(state, id, intent.x, intent.y, intent.radius);
+      const built = buildStation(state, id, intent.x, intent.y, intent.radius, intent.stationType);
       if (built) {
         // buildStation pushes onto state.stations on success; the one it
         // just pushed is the last element (KTD10 — gate district creation on
@@ -91,6 +128,46 @@ export function applyIntent(state: GameState, intent: Intent): void {
       if (!survey.ok) break;
       if (state.moneyCents < survey.totalCents) break;
       emitRoute(state, `route-${state.nextRouteId++}`, intent.waypoints, survey);
+      break;
+    }
+    case 'moveStation': {
+      // KTD8's flow diagram: capture the district *currently serving* this
+      // station before `moveStation` mutates its position. This is
+      // deliberately NOT a raw anchor-equality match against the station's
+      // current tile — a district's anchor is fixed at creation (KTD1), and
+      // a within-footprint move (R14) never mints a new one, so after even
+      // one such move the station's tile no longer equals any district's
+      // anchor. Matching by exact anchor-equality only ever worked for a
+      // station that had never moved; on a *second* move it silently missed,
+      // minting a spurious extra district and orphaning the real one. This
+      // is the same "which record is this station's activity credited to"
+      // question `activeDistrictFor` already answers for `delivery.ts` and
+      // `landValue.ts` (last-created record for the station id, since
+      // `state.districts` only ever appends) — reusing it here keeps the
+      // resolution rule one and the same everywhere, not a second, subtly
+      // different lookup just for relocation.
+      const station = state.stations.find((s) => s.id === intent.stationId);
+      if (!station) break;
+      const oldDistrict = activeDistrictFor(state, station.id);
+      const moved = moveStation(state, intent.stationId, intent.x, intent.y);
+      if (!moved) break;
+      if (oldDistrict) {
+        const withinFootprint =
+          Math.max(Math.abs(intent.x - oldDistrict.anchorX), Math.abs(intent.y - oldDistrict.anchorY)) <=
+          DISTRICT_FOOTPRINT_TILES;
+        // Within the old district's footprint: it continues being served —
+        // same record, development intact (R14) — so `ensureDistrict` is
+        // deliberately NOT called here; there is nothing new to create.
+        // Beyond it: the old district goes unserved (M4's stagnation-then-
+        // decline takes over) and a new one is ensured at the new site,
+        // keyed by the station's new anchor (KTD8's narrowed idempotency).
+        if (!withinFootprint) ensureDistrict(state, station);
+      } else {
+        // No district exists for this station id at all (shouldn't happen in
+        // normal play — every built station gets one — but stay correct
+        // under a hand-crafted or test-fixture state).
+        ensureDistrict(state, station);
+      }
       break;
     }
     default: {

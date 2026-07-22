@@ -1,5 +1,6 @@
 import type { GameState } from '../sim/state.ts';
 import type { Tile } from '../sim/pathfinding.ts';
+import type { StationType } from '../sim/model/track.ts';
 
 /**
  * The bridge between the simulation kernel and the view layers (KTD1, KTD2).
@@ -15,7 +16,12 @@ import type { Tile } from '../sim/pathfinding.ts';
 // sim intent — it acts on the GameClock directly — so it is not modeled here.
 export type Intent =
   | { kind: 'layTrack'; ax: number; ay: number; bx: number; by: number }
-  | { kind: 'buildStation'; x: number; y: number; radius: number }
+  /** Build a station (U5; `stationType` added milestone 5 U1, KTD3).
+   *  `stationType` is optional — `applyIntent` falls through to
+   *  `buildStation`'s own `DEFAULT_STATION_TYPE` ('mixed') when omitted, so
+   *  every pre-M5 dispatch site and test fixture keeps building the neutral
+   *  type without change. */
+  | { kind: 'buildStation'; x: number; y: number; radius: number; stationType?: StationType }
   | { kind: 'buyTrain'; engineId: string; stationIds: string[] }
   /** Commit a surveyed route (milestone 3 U4, KTD2). Carries only the
    *  waypoint list — never the path or cost the UI's preview computed —
@@ -23,7 +29,11 @@ export type Intent =
    *  from that recomputation. This is what keeps a stale UI proposal, a
    *  race with a concurrent state change, or a hand-crafted intent from
    *  ever committing a route at the wrong price. */
-  | { kind: 'commitRoute'; waypoints: Tile[] };
+  | { kind: 'commitRoute'; waypoints: Tile[] }
+  /** Relocate a station (milestone 5 U7, KTD8): full station cost, no
+   *  refund; leaves a permanent derelict record at the old tile. See
+   *  `sim/model/track.ts`'s `moveStation`. */
+  | { kind: 'moveStation'; stationId: string; x: number; y: number };
 
 export type Listener = (state: GameState) => void;
 
