@@ -33,8 +33,26 @@ export const LAND_TAX_RATE = 0.00035;
  *  land the player's own trains actually cause to develop. Bounded per
  *  parcel: intensity is at most 1 and `landValueAt` is itself bounded (no
  *  unbounded-growth term feeds it), so rent per parcel per day is bounded
- *  regardless of how long or how developed a district gets. */
-export const GROUND_RENT_RATE = 0.0009;
+ *  regardless of how long or how developed a district gets.
+ *
+ * Tuned down from an initial 0.0009 to hold U8's subordination gate (KTD3's
+ * own success criterion): rent is a *per-parcel* rate, but a catchment holds
+ * many parcels (`PARCELS_PER_TILE_EDGE`-subdivided, `model/land.ts`), and a
+ * player who buys out an entire radius-2 catchment (~58 parcels — the
+ * `tests/sim/landEconomics.e2e.test.ts` stress scenario) scales rent income
+ * roughly linearly with parcel count while one train's haulage income does
+ * not scale with how much land the player happens to own. At 0.0009, a
+ * fully-bought catchment's aggregate rent net of tax *exceeded* a single
+ * feeding train's delivery income (ratio ~1.3) — land would have dominated
+ * haulage, violating the plan's success criterion ("land income never
+ * dominates haulage income to the point where running trains becomes
+ * optional"). At 0.0006, the same fully-saturated-catchment stress scenario
+ * nets well under a third of one train's income (see that suite's own
+ * measured numbers) while a single developed parcel still nets a real,
+ * positive rent income over time — "developed land yields" stays true at
+ * ordinary holding sizes; it just cannot be scaled into a replacement for
+ * running trains. */
+export const GROUND_RENT_RATE = 0.0006;
 
 export const landSystem: System = (state, dtDays) => {
   expireCharters(state);
