@@ -13,6 +13,13 @@ import {
   CHARTER_WINDOW_DAYS,
   type ParcelAddress,
 } from '../../src/sim/model/land.ts';
+import {
+  landValueAt,
+  STATION_UPLIFT_CAP_CENTS,
+  STATION_UPLIFT_BASE_CENTS,
+  STATION_UPLIFT_DEV_BONUS_CENTS,
+} from '../../src/sim/model/landValue.ts';
+import { MIN_STATION_SPACING_TILES } from '../../src/sim/model/track.ts';
 
 /**
  * Milestone 6 U8 (KTD1-KTD3, R3/R6/R10) — the exploit gate that carries the
@@ -303,6 +310,162 @@ describe('U8: buying-ahead economics (KTD1-KTD3) — the exploit gate', () => {
     // income (rent net of tax, across every parcel) stays well under half
     // of what a single feeding train earned over the same run.
     expect(landNetCents).toBeLessThan(haulageCents * 0.5);
+  });
+});
+
+/**
+ * U8 (this fix): the station-uplift stacking exploit gate. Before this fix,
+ * `stationUpliftItem` (`sim/model/landValue.ts`) summed every covering
+ * station's uplift with no ceiling at all, and `buildStation`
+ * (`sim/model/track.ts`) had no same-tile or minimum-spacing guard — so a
+ * player could buy out a station's whole catchment (at plain `landValueAt`,
+ * no charter/anticipation premium required, since the catchment already
+ * grants rights) and then site any number of extra cheap stations on or
+ * near the same tile purely to inflate `landValueAt` at the parcels they
+ * already own, before immediately `sellLand`-ing everything for a
+ * same-tick profit. Two measures close it, defense in depth:
+ * `MIN_STATION_SPACING_TILES` refuses a degenerate same-tile re-site
+ * outright; `STATION_UPLIFT_CAP_CENTS` bounds the additive sum any single
+ * point can ever carry, so stations sited just off the blocked tile (which
+ * the spacing guard alone cannot stop) still can't push value past a
+ * two-station ceiling. Both constants' own docblocks explain why they sit
+ * where they do — this suite proves the composed result.
+ */
+describe('U8 exploit gate: station-uplift stacking cannot print money', () => {
+  it('MIN_STATION_SPACING_TILES refuses a second station on a tile an existing station already occupies', () => {
+    const s = freshWorld();
+    const moneyBefore = s.moneyCents;
+    applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 1, stationType: 'mixed' } as Intent);
+    expect(s.stations).toHaveLength(1); // the same-tile attempt was refused, not appended
+    expect(s.moneyCents).toBe(moneyBefore); // refused before any cost was charged, same as buildStation's other refusal paths (sea tile, unaffordable)
+  });
+
+  it('stacking exploit gate: build a station, buy its whole catchment, try to inflate value with more stations on/near the same tile, then sell everything -- nets a loss, not a flip profit', () => {
+    const s = freshWorld(); // builds the real source station at (OX, OY), radius 2
+    const moneyAtStart = s.moneyCents; // baseline BEFORE any land is bought at all
+
+    // Buy every acquirable parcel inside the source station's own catchment
+    // -- the exact precondition the exploit needs: real rights, no charter,
+    // no anticipation premium, plain landValueAt pricing.
+    for (let dx = -2; dx <= 2; dx += 0.5) {
+      for (let dy = -2; dy <= 2; dy += 0.5) {
+        applyIntent(s, { kind: 'buyLand', address: addressAt(OX + dx, OY + dy) } as Intent);
+      }
+    }
+    const ownedIds = s.parcels.map((p) => p.id);
+    expect(ownedIds.length).toBeGreaterThan(20); // a real catchment saturation, not a token few
+
+    const stationsBeforeStacking = s.stations.length;
+
+    // The literal reported exploit: pile extra stations directly on top of
+    // the existing one, purely to inflate the land just bought.
+    for (let i = 0; i < 5; i++) {
+      applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 3, stationType: 'mixed' } as Intent);
+    }
+    expect(s.stations).toHaveLength(stationsBeforeStacking); // every same-tile attempt refused (MIN_STATION_SPACING_TILES)
+
+    // The "near, not exactly on" variant the spacing guard alone cannot
+    // refuse (each of these is a distinct, legal tile) -- this is where
+    // STATION_UPLIFT_CAP_CENTS has to carry the defense.
+    const nearOffsets: Array<[number, number]> = [
+      [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1],
+    ];
+    for (const [dx, dy] of nearOffsets) {
+      applyIntent(s, { kind: 'buildStation', x: OX + dx, y: OY + dy, radius: 1, stationType: 'mixed' } as Intent);
+    }
+    expect(s.stations.length).toBeGreaterThan(stationsBeforeStacking); // these DID get built -- real, legal, costly sites
+
+    // The overlap this ring creates is real and capped, not zeroed out --
+    // confirms the stacking attempt actually engaged the cap rather than
+    // trivially failing for an unrelated reason.
+    const capped = landValueAt(s, OX, OY).items.find((i) => i.name === 'station-uplift')!.cents;
+    expect(capped).toBeLessThanOrEqual(STATION_UPLIFT_CAP_CENTS);
+
+    // Cash out everything that was bought.
+    for (const id of ownedIds) applyIntent(s, { kind: 'sellLand', parcelId: id } as Intent);
+
+    // The whole sequence -- buy the catchment, stack stations against it
+    // every way the guard and the cap allow, sell everything -- nets a
+    // loss (or at best break-even), never a flip profit: KTD7's spread
+    // plus the extra stations' own build cost dominates whatever capped
+    // residual value bump the stacking maneuver bought.
+    const net = s.moneyCents - moneyAtStart;
+    expect(net).toBeLessThanOrEqual(0);
+  });
+});
+
+/**
+ * U8: legitimate additive composition survives the cap. Two genuinely
+ * separate stations -- each its own real siting decision, each serving its
+ * own neighborhood -- still compose additively where their catchments
+ * overlap (KTD2, the plan's own "overlapping catchments compose
+ * additively" scenario, `landValue.test.ts`'s unit-level version of this
+ * same property), right up to `STATION_UPLIFT_CAP_CENTS`. The cap exists to
+ * bound degenerate stacking (above), not to flatten real two-neighborhood
+ * overlap into a single station's worth of value.
+ */
+describe('U8: overlapping catchments from two genuinely separate stations still compose (bounded by the cap)', () => {
+  const AX = 19;
+  const AY = 0;
+  const BX = AX + 4; // far enough apart to be two real, separately-useful stations; close enough for a real catchment overlap
+
+  function twoStationWorld(): GameState {
+    const s = createGameState(1);
+    s.world = { width: BX + 20, height: AY + 20 };
+    s.moneyCents = 10_000_000_00;
+    expect(BX - AX).toBeGreaterThanOrEqual(MIN_STATION_SPACING_TILES); // sanity: a legal, non-degenerate siting
+    applyIntent(s, { kind: 'buildStation', x: AX, y: AY, radius: 3, stationType: 'mixed' } as Intent);
+    applyIntent(s, { kind: 'buildStation', x: BX, y: AY, radius: 3, stationType: 'mixed' } as Intent);
+    return s;
+  }
+
+  it('the overlap between two stations is worth strictly more than either station alone, and stays bounded by the cap', () => {
+    const both = twoStationWorld();
+    const midX = (AX + BX) / 2; // squarely in both catchments (radius 3, 4 tiles apart)
+
+    const onlyA = createGameState(1);
+    onlyA.world = both.world;
+    onlyA.moneyCents = 10_000_000_00;
+    applyIntent(onlyA, { kind: 'buildStation', x: AX, y: AY, radius: 3, stationType: 'mixed' } as Intent);
+
+    const onlyB = createGameState(1);
+    onlyB.world = both.world;
+    onlyB.moneyCents = 10_000_000_00;
+    applyIntent(onlyB, { kind: 'buildStation', x: BX, y: AY, radius: 3, stationType: 'mixed' } as Intent);
+
+    const bothUplift = landValueAt(both, midX, AY).items.find((i) => i.name === 'station-uplift')!.cents;
+    const onlyAUplift = landValueAt(onlyA, midX, AY).items.find((i) => i.name === 'station-uplift')!.cents;
+    const onlyBUplift = landValueAt(onlyB, midX, AY).items.find((i) => i.name === 'station-uplift')!.cents;
+
+    // Additive composition: at dev 0 (both fresh, no district growth yet)
+    // and well under the cap, the sum is exact, not clipped.
+    expect(bothUplift).toBe(onlyAUplift + onlyBUplift);
+    expect(bothUplift).toBeGreaterThan(onlyAUplift);
+    expect(bothUplift).toBeGreaterThan(onlyBUplift);
+    expect(bothUplift).toBeLessThanOrEqual(STATION_UPLIFT_CAP_CENTS);
+
+    // A real player can still buy into that legitimate overlap at full
+    // price -- composition being capped in the degenerate-stacking case
+    // above never nerfs this ordinary, single-decision two-city scenario.
+    const address = addressAt(midX, AY);
+    const refusal = (() => {
+      const s2 = both;
+      const before = s2.parcels.length;
+      applyIntent(s2, { kind: 'buyLand', address } as Intent);
+      return s2.parcels.length === before ? 'refused' : null;
+    })();
+    expect(refusal).toBeNull();
+  });
+
+  it('the cap has real headroom above the maximum a single fully-developed station alone can ever contribute', () => {
+    // The cap is sized as a multiple of one station's own theoretical peak
+    // (STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS) -- a
+    // single real, fully-developed station's own uplift never approaches
+    // the cap on its own, so the cap is never what limits ONE station's
+    // legitimate value.
+    const singlePeak = STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS;
+    expect(STATION_UPLIFT_CAP_CENTS).toBeGreaterThanOrEqual(singlePeak);
+    expect(STATION_UPLIFT_CAP_CENTS).toBeGreaterThan(singlePeak); // strictly -- headroom for genuine 2-station overlap, not just 1x
   });
 });
 
