@@ -6,6 +6,8 @@ import { RAW_INDUSTRY_TYPES } from '../sim/model/goods.ts';
 import type { Camera, Point, Rect } from './camera.ts';
 import type { ZoomTierId } from './zoomTiers.ts';
 import { TerrainChunkManager } from './terrainChunks.ts';
+import type { Tile } from '../sim/pathfinding.ts';
+import type { StepCost, TrackStructure } from '../sim/model/trackCost.ts';
 
 /**
  * Draws the whole world onto the map canvas (U3/U5/U6/U9). Terrain is drawn
@@ -43,7 +45,25 @@ import { TerrainChunkManager } from './terrainChunks.ts';
  * not unit-tested. The three predicates above (`isWithinVisibleBounds`,
  * `scaleCompensatedSize`, `shouldShowCityLabel`) are pure and DOM/Pixi-free,
  * so the logic that decides *what* would render is fully covered without
- * touching pixels.
+ * touching pixels. Milestone 3 U6 adds two more in the same spirit:
+ * `riverJitter` (deterministic per-tile river polyline displacement) and
+ * `structureMarksFor` (maps a survey overlay's steps to the tiles where a
+ * structure line item should draw a mark).
+ *
+ * Milestone 3 U6 additions (KTD9, R2/R3/R8):
+ *   - A river layer (`riverLayer`), between terrain and track — nothing drew
+ *     `state.rivers` before this milestone, and a bridge itemized in the
+ *     survey panel over an invisible river is illegible (AE3). Drawn from
+ *     the U1-rebased graph, each polyline point jittered by `riverJitter` so
+ *     it reads as a meandering river rather than a coarse-grid zigzag — the
+ *     treatment the terrain milestone's plan described but deferred.
+ *   - An optional survey proposal overlay (`overlayLayer`), above track: a
+ *     dashed polyline through the proposed path with a distinct mark on
+ *     every step that carries a structure. `render`'s `overlay` parameter is
+ *     `undefined` outside survey mode — the overlay is never authoritative
+ *     (KTD9: it mirrors `SurveyController`'s boot-scope view state, never
+ *     `GameState`) and is redrawn from scratch every frame like everything
+ *     else here.
  *
  * U4 (KTD7/KTD8, R2/R3/R9): the terrain layer is no longer a single static
  * per-tile `Graphics` draw. `TerrainChunkManager` (`terrainChunks.ts`) owns
@@ -151,14 +171,145 @@ export function shouldShowCityLabel(tier: ZoomTierId, population: number): boole
   return tier !== 'continent' || population >= CITY_LABEL_POPULATION_THRESHOLD;
 }
 
+// --- Rivers (U6, AE3's visibility substrate) -------------------------------
+
+export const RIVER_STROKE_PX = 1.5;
+export const RIVER_COLOR = 0x4a7ba6;
+
+/** Maximum per-axis jitter (world tiles) applied to a river polyline point
+ *  before drawing (U6). Deliberately well under 0.5 tiles so a jittered
+ *  point never crosses into a neighboring tile's visual space — it should
+ *  read as "a river winding through this tile," not relocate the river. */
+export const RIVER_JITTER_TILES = 0.28;
+
+/**
+ * Deterministic per-tile jitter for river polyline points (U6). A river
+ * traced on the coarse tile grid (`world/rivers.ts`) is dead straight
+ * between D8 steps, which reads as a surveyed canal, not a river — this
+ * offsets each point by a small, fixed-per-coordinate amount so the same
+ * river looks the same every frame (no per-frame randomness, which would
+ * make the line visibly crawl) while still breaking up the grid-aligned
+ * look. Pure and DOM/Pixi-free (KTD7): a hash of `(x, y)` via two
+ * decorrelated sine terms, the same "cheap deterministic pseudo-random"
+ * technique noise libraries use for hash-based jitter, not cryptographic
+ * quality — it only needs to look irregular, not be unpredictable.
+ */
+export function riverJitter(x: number, y: number): Point {
+  const hashA = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  const hashB = Math.sin(x * 269.5 + y * 183.3) * 43758.5453;
+  const frac = (v: number) => v - Math.floor(v);
+  return {
+    x: (frac(hashA) - 0.5) * 2 * RIVER_JITTER_TILES,
+    y: (frac(hashB) - 0.5) * 2 * RIVER_JITTER_TILES,
+  };
+}
+
+// --- Survey proposal overlay (U6, KTD9) ------------------------------------
+
+export const OVERLAY_STROKE_PX = 2.5;
+export const OVERLAY_COLOR = 0xffe066;
+export const OVERLAY_DASH_PX = 6;
+export const OVERLAY_GAP_PX = 4;
+export const STRUCTURE_MARK_PX = 8;
+export const STRUCTURE_COLORS: Record<TrackStructure, number> = {
+  bridge: 0x4a7ba6,
+  tunnel: 0x8d5524,
+  cutting: 0xd4a24c,
+};
+
+/** A survey proposal's path and itemized steps — everything `WorldRenderer`
+ *  needs to draw it, and nothing it doesn't (never the full `SurveyResult`
+ *  union, since an overlay only ever exists for an `ok: true` proposal —
+ *  the caller in `main.ts` narrows before constructing this). */
+export interface SurveyOverlay {
+  path: Tile[];
+  steps: StepCost[];
+}
+
+export interface StructureMark {
+  x: number;
+  y: number;
+  structure: TrackStructure;
+}
+
+/**
+ * Map a survey overlay's steps to the tiles where a structure mark should
+ * draw (U6). Pure — the logic the "overlay-describing helper" test coverage
+ * targets, per the repo's no-rendering-tests policy (KTD7): this decides
+ * *where* marks land, `render` just draws them. Each mark sits at the
+ * midpoint of the step it belongs to (`path[i]`..`path[i+1]`), one per
+ * structured step, in path order.
+ */
+export function structureMarksFor(overlay: SurveyOverlay): StructureMark[] {
+  const marks: StructureMark[] = [];
+  for (let i = 0; i < overlay.steps.length; i++) {
+    const structure = overlay.steps[i].structure;
+    if (!structure) continue;
+    const a = overlay.path[i];
+    const b = overlay.path[i + 1];
+    if (!a || !b) continue;
+    marks.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, structure });
+  }
+  return marks;
+}
+
+/**
+ * Draw one dashed line segment from `(ax, ay)` to `(bx, by)`, continuing the
+ * dash/gap phase carried in `phase` (mutated) so a multi-segment polyline's
+ * dash pattern stays continuous across segment joins rather than resetting
+ * at every tile boundary. World-unit lengths in, so the caller has already
+ * scale-compensated `dashWorld`/`gapWorld`/`width` (KTD6's stroke-sizing
+ * convention). Not itself a candidate for the pure-helper test surface
+ * (KTD7) — it draws — but is kept small and separate from `render` so the
+ * one genuinely nontrivial bit of overlay drawing isn't buried inline.
+ */
+function drawDashedSegment(
+  g: Graphics,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  dashWorld: number,
+  gapWorld: number,
+  color: number,
+  width: number,
+  phase: { value: number },
+): void {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy);
+  if (len === 0 || dashWorld <= 0) return;
+  const ux = dx / len;
+  const uy = dy / len;
+  const cycle = dashWorld + gapWorld;
+  let pos = 0;
+  let cyclePos = phase.value % cycle;
+  while (pos < len) {
+    const inDash = cyclePos < dashWorld;
+    const remainingInPhase = inDash ? dashWorld - cyclePos : cycle - cyclePos;
+    const step = Math.min(remainingInPhase, len - pos);
+    if (inDash) {
+      g.moveTo(ax + ux * pos, ay + uy * pos)
+        .lineTo(ax + ux * (pos + step), ay + uy * (pos + step))
+        .stroke({ color, width });
+    }
+    pos += step;
+    cyclePos += step;
+    if (cyclePos >= cycle) cyclePos -= cycle;
+  }
+  phase.value = (phase.value + len) % cycle;
+}
+
 export class WorldRenderer {
   readonly container = new Container();
   private chunkManager: TerrainChunkManager;
+  private riverLayer = new Graphics();
   private trackLayer = new Graphics();
   private industryLayer = new Graphics();
   private stationLayer = new Graphics();
   private cityLayer = new Container();
   private trainLayer = new Graphics();
+  private overlayLayer = new Graphics();
   private labels = new Map<string, Text>();
   // Cached per-city dot Graphics, reused across frames the way `labelFor`
   // already caches Text objects — the U1-era version reallocated a Graphics
@@ -167,13 +318,17 @@ export class WorldRenderer {
 
   constructor(renderer: Renderer, private tilePx: number) {
     this.chunkManager = new TerrainChunkManager(renderer, tilePx);
+    // Back to front: terrain -> rivers -> track -> industries -> stations ->
+    // cities -> trains -> survey overlay (drawn above everything else, U6).
     this.container.addChild(
       this.chunkManager.container,
+      this.riverLayer,
       this.trackLayer,
       this.industryLayer,
       this.stationLayer,
       this.cityLayer,
       this.trainLayer,
+      this.overlayLayer,
     );
   }
 
@@ -183,12 +338,37 @@ export class WorldRenderer {
     this.chunkManager.destroy();
   }
 
-  render(state: GameState, camera: Camera): void {
+  render(state: GameState, camera: Camera, overlay?: SurveyOverlay): void {
     this.chunkManager.update(camera, state.world.width, state.world.height);
     const t = this.tilePx;
 
     const { scale, tier } = camera;
     const visible = camera.visibleWorldRect();
+
+    // Rivers (U6): a jittered polyline layer between terrain and track, so a
+    // structure the survey panel itemizes over a river has a river to show
+    // for it (AE3). Culled per-point the same way track segments are.
+    this.riverLayer.clear();
+    const riverStroke = scaleCompensatedSize(RIVER_STROKE_PX, scale);
+    for (const river of state.rivers.rivers) {
+      let started = false;
+      for (const p of river.points) {
+        if (!isWithinVisibleBounds({ x: p.x, y: p.y }, visible, VISIBLE_MARGIN_TILES)) {
+          started = false;
+          continue;
+        }
+        const jitter = riverJitter(p.x, p.y);
+        const px = (p.x + jitter.x) * t + t / 2;
+        const py = (p.y + jitter.y) * t + t / 2;
+        if (!started) {
+          this.riverLayer.moveTo(px, py);
+          started = true;
+        } else {
+          this.riverLayer.lineTo(px, py);
+        }
+      }
+      this.riverLayer.stroke({ color: RIVER_COLOR, width: riverStroke });
+    }
 
     // Track segments — culled to the visible rect (plus margin) and
     // stroke-compensated so the line reads the same width at every zoom.
@@ -306,6 +486,42 @@ export class WorldRenderer {
           .fill({ color: COLORS.train });
       } else {
         this.trainLayer.circle(cx, cy, trainMarkerSize / 2).fill({ color: COLORS.train });
+      }
+    }
+
+    // Survey proposal overlay (U6, KTD9): a dashed polyline through the
+    // proposed path, with a distinct mark on every step that carries a
+    // structure (AE3). `overlay` is only ever passed while a survey is in
+    // progress — nothing to clear-and-skip is needed the rest of the time
+    // beyond the unconditional `.clear()` below.
+    this.overlayLayer.clear();
+    if (overlay) {
+      const overlayStroke = scaleCompensatedSize(OVERLAY_STROKE_PX, scale);
+      const dashWorld = scaleCompensatedSize(OVERLAY_DASH_PX, scale);
+      const gapWorld = scaleCompensatedSize(OVERLAY_GAP_PX, scale);
+      const phase = { value: 0 };
+      for (let i = 0; i + 1 < overlay.path.length; i++) {
+        const a = overlay.path[i];
+        const b = overlay.path[i + 1];
+        drawDashedSegment(
+          this.overlayLayer,
+          a.x * t + t / 2,
+          a.y * t + t / 2,
+          b.x * t + t / 2,
+          b.y * t + t / 2,
+          dashWorld,
+          gapWorld,
+          OVERLAY_COLOR,
+          overlayStroke,
+          phase,
+        );
+      }
+
+      const markSize = scaleCompensatedSize(STRUCTURE_MARK_PX, scale);
+      for (const mark of structureMarksFor(overlay)) {
+        this.overlayLayer
+          .circle(mark.x * t + t / 2, mark.y * t + t / 2, markSize / 2)
+          .fill({ color: STRUCTURE_COLORS[mark.structure] });
       }
     }
   }

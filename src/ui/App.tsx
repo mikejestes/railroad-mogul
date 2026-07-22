@@ -1,29 +1,44 @@
 import { useState } from 'react';
 import type { GameStore } from '../store/gameStore.ts';
 import type { GameClock } from '../sim/clock.ts';
-import { useGameState } from './useGameState.ts';
+import type { SurveyController } from '../render/surveyController.ts';
+import { useGameState, useSurveyProposal } from './useGameState.ts';
 import { CityPanel } from './panels/CityPanel.tsx';
 import { TrainPanel } from './panels/TrainPanel.tsx';
 import { FinancePanel } from './panels/FinancePanel.tsx';
 import { ClockControls } from './panels/ClockControls.tsx';
 import { BuildPanel, type BuildMode } from './panels/BuildPanel.tsx';
 import { TrainBuilder } from './panels/TrainBuilder.tsx';
+import { SurveyPanel } from './panels/SurveyPanel.tsx';
 
 /**
  * Root of the React management overlay (U10). Subscribes to store snapshots
  * (published on tick) and composes the panels. Sits as a sibling DOM tree over
  * the PixiJS map canvas; player build actions flow back to the sim as intents.
+ *
+ * Milestone 3 U6: `survey` (a `SurveyController`, KTD9) and its
+ * commit/cancel callbacks come from `main.ts`, the same way camera and
+ * pointer handling do — the controller's state lives outside React and
+ * `GameState` alike; `useSurveyProposal` is this component's only touch
+ * point with it.
  */
 export function App({
   store,
   clock,
+  survey,
   onBuildModeChange,
+  onSurveyCommit,
+  onSurveyCancel,
 }: {
   store: GameStore;
   clock: GameClock;
+  survey: SurveyController;
   onBuildModeChange?: (mode: BuildMode) => void;
+  onSurveyCommit?: () => void;
+  onSurveyCancel?: () => void;
 }) {
   const state = useGameState(store);
+  const surveyProposal = useSurveyProposal(store, survey);
   const [buildMode, setBuildMode] = useState<BuildMode>('none');
 
   const changeBuildMode = (m: BuildMode) => {
@@ -49,6 +64,11 @@ export function App({
       {buildMode === 'train' && (
         <div style={{ position: 'absolute', top: 60, right: 12 }}>
           <TrainBuilder state={state} store={store} onDone={() => changeBuildMode('none')} />
+        </div>
+      )}
+      {buildMode === 'survey' && (
+        <div style={{ position: 'absolute', bottom: 12, left: 12 }}>
+          <SurveyPanel proposal={surveyProposal} onCommit={() => onSurveyCommit?.()} onCancel={() => onSurveyCancel?.()} />
         </div>
       )}
     </>

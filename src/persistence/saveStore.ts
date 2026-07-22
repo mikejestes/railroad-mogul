@@ -41,8 +41,9 @@ export function deserializeSave(json: string): GameState {
 }
 
 /**
- * Migration hook. v1 is the only shipped version; future format bumps add a
- * case here that upgrades an older state in place before it is used.
+ * Migration hook. No version has ever shipped a real migrator; future format
+ * bumps add a case here that upgrades an older state in place before it is
+ * used, if one is ever warranted.
  *
  * v1 -> v2 (KTD9, terrain-substrate milestone U7): schema 2 removed
  * `World.terrain` (U3) — the array a v1 save's `state` JSON still carries —
@@ -55,6 +56,16 @@ export function deserializeSave(json: string): GameState {
  * refuses a v1 load outright per KTD9 rather than attempting a lossy
  * upgrade — safe today because no save UI, autosave, or load path exists in
  * the running app, so no v1 save can exist in the wild to strand.
+ *
+ * v2 -> v3 (KTD10, route-surveying milestone U4): schema 3 adds
+ * `GameState.routes`, `nextRouteId`, and the optional
+ * `TrackSegment.structure` field (`model/track.ts`). A v2 save has no routes
+ * to migrate forward and no way to retroactively decide which of its
+ * hand-laid segments would have "wanted" a structure — fabricating either
+ * would be the same silent-corruption failure mode the v1 -> v2 bump already
+ * rejected, and the same precedent (no save UI/autosave/load path in the
+ * running app, so no v2 save can exist in the wild) applies unchanged.
+ * `migrate` refuses a v2 load outright, same as v1.
  */
 function migrate(state: GameState, fromVersion: number): GameState {
   if (fromVersion === SCHEMA_VERSION) return state;

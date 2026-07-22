@@ -7,7 +7,14 @@ import {
   inCatchment,
   industriesInCatchment,
   TRACK_COST_PER_SEGMENT,
+  effectiveGrade,
+  gradeWeightMultiplier,
+  segmentWeight,
+  GRADE_WEIGHT_FACTOR,
+  type TrackSegment,
 } from '../../src/sim/model/track.ts';
+import { CUTTING_MAX_GRADE } from '../../src/sim/model/trackCost.ts';
+import { moveCostFor, terrainAt } from '../../src/world/geography.ts';
 import { makeIndustry } from '../../src/sim/model/industries.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
 
@@ -70,5 +77,63 @@ describe('track building', () => {
     const station = s.stations.find((st) => st.id === 'london-stn')!;
     const found = industriesInCatchment(s, station).map((i) => i.id);
     expect(found).toContain('near');
+  });
+});
+
+describe('effectiveGrade and grade-aware segmentWeight (milestone 3 U5, KTD4/KTD5/KTD8, R11)', () => {
+  // Real, non-sea adjacent pairs at the DEFAULT_TERRAIN_SEED fallback (this
+  // file never calls configureTerrainSeed, same convention as OX/OY above):
+  // a near-flat pair and a steep one (grade > MAX_UNASSISTED_GRADE), both
+  // empirically verified against the actual reference field.
+  const FLAT: TrackSegment = { ax: 17, ay: 0, bx: 18, by: 0 };
+  const STEEP: TrackSegment = { ax: 18, ay: 10, bx: 19, by: 10 };
+
+  it('a plain (no-structure) segment has effectiveGrade equal to its raw |Δelevation| / distance', () => {
+    expect(effectiveGrade(FLAT)).toBeGreaterThan(0);
+    expect(effectiveGrade(STEEP)).toBeGreaterThan(effectiveGrade(FLAT));
+  });
+
+  it('a bridge or tunnel caps effectiveGrade to 0; a cutting caps it to CUTTING_MAX_GRADE', () => {
+    const rawSteepGrade = effectiveGrade(STEEP);
+    expect(rawSteepGrade).toBeGreaterThan(CUTTING_MAX_GRADE);
+
+    expect(effectiveGrade({ ...STEEP, structure: 'bridge' })).toBe(0);
+    expect(effectiveGrade({ ...STEEP, structure: 'tunnel' })).toBe(0);
+    expect(effectiveGrade({ ...STEEP, structure: 'cutting' })).toBe(CUTTING_MAX_GRADE);
+  });
+
+  it('gradeWeightMultiplier: 1 at zero grade, and a parameterized factor of 0 collapses to exactly 1 regardless of grade (regression guard)', () => {
+    expect(gradeWeightMultiplier(0)).toBe(1);
+    expect(gradeWeightMultiplier(effectiveGrade(STEEP), 0)).toBe(1);
+    expect(gradeWeightMultiplier(effectiveGrade(STEEP))).toBe(1 + GRADE_WEIGHT_FACTOR * effectiveGrade(STEEP));
+  });
+
+  it('a tunneled segment weighs exactly what the pre-grade formula would give (grade fully neutralized); a cutting weighs strictly between raw-grade and tunneled', () => {
+    const raw = segmentWeight({ width: 0, height: 0 }, STEEP); // no structure: full raw grade applies
+    const cutting = segmentWeight({ width: 0, height: 0 }, { ...STEEP, structure: 'cutting' });
+    const tunnel = segmentWeight({ width: 0, height: 0 }, { ...STEEP, structure: 'tunnel' });
+
+    // The pre-grade (milestone-2) formula: dist * average terrain move cost,
+    // with no grade multiplier at all.
+    const preGradeWeight = tunnel; // tunnel's effectiveGrade is 0, multiplier collapses to 1
+    expect(gradeWeightMultiplier(effectiveGrade({ ...STEEP, structure: 'tunnel' }))).toBe(1);
+
+    expect(tunnel).toBeLessThan(cutting);
+    expect(cutting).toBeLessThan(raw);
+    expect(tunnel).toBe(preGradeWeight);
+  });
+
+  it('a tunneled (zero-grade) segment equals the exact pre-milestone-3 formula, hand-reconstructed from moveCostFor/terrainAt', () => {
+    // Direct regression guard (parameterized via tunneling, since real
+    // terrain offers no guaranteed zero-grade pair): the pre-grade formula
+    // was dist * average(moveCostFor(terrainAt(a)), moveCostFor(terrainAt(b)))
+    // with no multiplier at all — reconstruct it independently of
+    // segmentWeight's own implementation and compare.
+    const tunneled: TrackSegment = { ...STEEP, structure: 'tunnel' };
+    const dist = Math.hypot(STEEP.ax - STEEP.bx, STEEP.ay - STEEP.by);
+    const a = moveCostFor(terrainAt(STEEP.ax, STEEP.ay));
+    const b = moveCostFor(terrainAt(STEEP.bx, STEEP.by));
+    const preGradeFormula = dist * ((a + b) / 2);
+    expect(segmentWeight({ width: 0, height: 0 }, tunneled)).toBeCloseTo(preGradeFormula, 9);
   });
 });

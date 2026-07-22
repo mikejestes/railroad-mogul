@@ -3,6 +3,9 @@ import {
   isWithinVisibleBounds,
   scaleCompensatedSize,
   shouldShowCityLabel,
+  riverJitter,
+  structureMarksFor,
+  RIVER_JITTER_TILES,
   VISIBLE_MARGIN_TILES,
   CITY_LABEL_POPULATION_THRESHOLD,
   TRACK_STROKE_PX,
@@ -11,6 +14,7 @@ import {
   CITY_LABEL_FONT_PX,
 } from '../../src/render/worldRenderer.ts';
 import type { Rect } from '../../src/render/camera.ts';
+import type { StepCost } from '../../src/sim/model/trackCost.ts';
 
 /**
  * U5's draw calls themselves are untested by policy (KTD7, no rendering
@@ -80,6 +84,73 @@ describe('scale-compensated stroke/marker size (KTD6)', () => {
       const labelScale = scaleCompensatedSize(1, scale);
       expect(CITY_LABEL_FONT_PX * labelScale * scale).toBeCloseTo(CITY_LABEL_FONT_PX, 6);
     }
+  });
+});
+
+describe('riverJitter (U6, KTD7)', () => {
+  it('is deterministic: the same tile always produces the same jitter', () => {
+    expect(riverJitter(12, 34)).toEqual(riverJitter(12, 34));
+  });
+
+  it('stays within [-RIVER_JITTER_TILES, RIVER_JITTER_TILES] on both axes, across a spread of tiles', () => {
+    for (let x = 0; x < 40; x += 3) {
+      for (let y = 0; y < 28; y += 3) {
+        const j = riverJitter(x, y);
+        expect(Math.abs(j.x)).toBeLessThanOrEqual(RIVER_JITTER_TILES);
+        expect(Math.abs(j.y)).toBeLessThanOrEqual(RIVER_JITTER_TILES);
+      }
+    }
+  });
+
+  it('different tiles generally produce different jitter (not a constant)', () => {
+    const a = riverJitter(1, 1);
+    const b = riverJitter(2, 5);
+    expect(a).not.toEqual(b);
+  });
+});
+
+describe('structureMarksFor (U6, AE3 substrate, KTD7)', () => {
+  function makeStep(overrides: Partial<StepCost> = {}): StepCost {
+    return {
+      baseCents: 0,
+      terrainCents: 0,
+      gradeCents: 0,
+      structureCents: 0,
+      landCents: 0,
+      totalCents: 0,
+      rawGrade: 0,
+      effectiveGrade: 0,
+      ...overrides,
+    };
+  }
+
+  it('places one mark per structured step, at the midpoint of that step, and none for plain steps', () => {
+    const overlay = {
+      path: [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 2, y: 0 },
+        { x: 3, y: 0 },
+      ],
+      steps: [makeStep(), makeStep({ structure: 'bridge' }), makeStep({ structure: 'tunnel' })],
+    };
+    const marks = structureMarksFor(overlay);
+    expect(marks).toEqual([
+      { x: 1.5, y: 0, structure: 'bridge' },
+      { x: 2.5, y: 0, structure: 'tunnel' },
+    ]);
+  });
+
+  it('returns no marks for an overlay with no structures', () => {
+    const overlay = {
+      path: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
+      steps: [makeStep()],
+    };
+    expect(structureMarksFor(overlay)).toEqual([]);
+  });
+
+  it('returns no marks for an empty overlay', () => {
+    expect(structureMarksFor({ path: [], steps: [] })).toEqual([]);
   });
 });
 

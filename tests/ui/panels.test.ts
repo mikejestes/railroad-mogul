@@ -3,6 +3,9 @@ import { GameStore } from '../../src/store/gameStore.ts';
 import { applyIntent, buyTrain } from '../../src/store/applyIntents.ts';
 import { createGameState, STARTING_CAPITAL, type GameState } from '../../src/sim/state.ts';
 import { engineById } from '../../src/sim/model/trains.ts';
+import { refusalMessage, summarizeSteps, structureBreakdown } from '../../src/ui/panels/SurveyPanel.tsx';
+import type { SurveyRefusalReason } from '../../src/sim/surveying.ts';
+import type { StepCost } from '../../src/sim/model/trackCost.ts';
 
 /**
  * U10 wiring: the store bridge publishes snapshots to subscribers, and queued
@@ -88,5 +91,77 @@ describe('buy-train flow (U6/U10)', () => {
     const s = twoStations();
     applyIntent(s, { kind: 'buyTrain', engineId: 'planet', stationIds: ['A', 'B'] });
     expect(s.trains).toHaveLength(1);
+  });
+});
+
+describe('SurveyPanel content logic (milestone 3 U6, AE3/AE4, KTD7)', () => {
+  // Per the repo's no-rendering-tests policy, SurveyPanel's JSX itself is
+  // untested — these are the pure functions that decide *what* it shows,
+  // the same split worldRenderer.ts's predicates already use.
+  function makeStep(overrides: Partial<StepCost> = {}): StepCost {
+    return {
+      baseCents: 100,
+      terrainCents: 20,
+      gradeCents: 5,
+      structureCents: 0,
+      landCents: 10,
+      totalCents: 135,
+      rawGrade: 0.01,
+      effectiveGrade: 0.01,
+      ...overrides,
+    };
+  }
+
+  it('every refusal reason maps to a distinct, human-readable message', () => {
+    const reasons: SurveyRefusalReason[] = ['endpoint-on-sea', 'waypoint-on-sea', 'no-path'];
+    const messages = reasons.map(refusalMessage);
+    expect(new Set(messages).size).toBe(reasons.length); // all distinct
+    for (const m of messages) {
+      expect(m.length).toBeGreaterThan(0);
+      expect(m).not.toMatch(/^undefined$/);
+    }
+  });
+
+  it('summarizeSteps sums each category across steps, and the categories sum to the total (itemization completeness)', () => {
+    const steps = [makeStep(), makeStep({ baseCents: 200, terrainCents: 40, gradeCents: 10, landCents: 20, totalCents: 270 })];
+    const totals = summarizeSteps(steps);
+    expect(totals).toEqual({
+      baseCents: 300,
+      terrainCents: 60,
+      gradeCents: 15,
+      structureCents: 0,
+      landCents: 30,
+      totalCents: 405,
+    });
+    expect(totals.baseCents + totals.terrainCents + totals.gradeCents + totals.structureCents + totals.landCents).toBe(
+      totals.totalCents,
+    );
+  });
+
+  it('summarizeSteps on an empty step list is all zero', () => {
+    expect(summarizeSteps([])).toEqual({
+      baseCents: 0,
+      terrainCents: 0,
+      gradeCents: 0,
+      structureCents: 0,
+      landCents: 0,
+      totalCents: 0,
+    });
+  });
+
+  it("AE3: a proposal whose steps include a bridge shows a bridge line item, distinct from other structures", () => {
+    const steps = [
+      makeStep({ structure: 'bridge', structureCents: 12_000, totalCents: 12_135 }),
+      makeStep({ structure: 'tunnel', structureCents: 30_000, totalCents: 30_135 }),
+      makeStep(), // plain step: contributes nothing to the breakdown
+    ];
+    const breakdown = structureBreakdown(steps);
+    expect(breakdown.bridge).toBe(12_000);
+    expect(breakdown.tunnel).toBe(30_000);
+    expect(breakdown.cutting).toBeUndefined();
+  });
+
+  it('structureBreakdown is empty when no step carries a structure', () => {
+    expect(structureBreakdown([makeStep(), makeStep()])).toEqual({});
   });
 });
