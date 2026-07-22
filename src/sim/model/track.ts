@@ -118,8 +118,45 @@ export const TRACK_COST_PER_SEGMENT = 50_00; // cents
 export const MOUNTAIN_SURCHARGE = 100_00;
 export const STATION_COST = [50_00, 100_00, 200_00]; // by radius-1 index
 
+/**
+ * Minimum Chebyshev tile distance a NEW station must keep from every
+ * existing station (milestone 6 U8, defense in depth alongside
+ * `STATION_UPLIFT_CAP_CENTS`, `landValue.ts`): degenerate-siting guard
+ * against building a station directly on top of (or, with a larger value,
+ * densely packed around) one that already exists purely to milk additive
+ * `station-uplift` composition — see `landValueAt`'s exploit-gate docblock.
+ *
+ * Deliberately kept at the minimum viable value of `1` — i.e. only an exact
+ * same-tile re-site is refused; anything strictly closer than one tile is
+ * geometrically impossible on the integer tile grid, so this is in effect a
+ * same-tile-duplicate refusal expressed as a spacing constant. A larger
+ * value (e.g. 2-3 tiles) was tried and rejected: `tests/sim/track.test.ts`'s
+ * "storing each type end to end" scenario legitimately sites three stations
+ * one tile apart (`OX`, `OX+1`, `OX+2`), and nothing in the product design
+ * says two independently-useful stations can't be adjacent. Stacking
+ * defense beyond same-tile refusal is `STATION_UPLIFT_CAP_CENTS`'s job, not
+ * this guard's — see that constant's docblock for why the two together are
+ * still sufficient to close the exploit.
+ */
+export const MIN_STATION_SPACING_TILES = 1;
+
 function inBounds(world: World, x: number, y: number): boolean {
   return x >= 0 && x < world.width && y >= 0 && y < world.height;
+}
+
+/** Whether siting a NEW station at `(x, y)` would violate
+ *  `MIN_STATION_SPACING_TILES` against any EXISTING station other than the
+ *  one whose id is `excludeId` (milestone 6 U8). `excludeId` lets
+ *  `moveStation` check its own relocation without conflicting with its own
+ *  pre-move record (moving a station near its old spot is legitimate; only
+ *  OTHER stations should ever block a site). */
+function violatesStationSpacing(state: GameState, x: number, y: number, excludeId?: string): boolean {
+  for (const station of state.stations) {
+    if (station.id === excludeId) continue;
+    const dist = Math.max(Math.abs(station.x - x), Math.abs(station.y - y));
+    if (dist < MIN_STATION_SPACING_TILES) return true;
+  }
+  return false;
 }
 
 /** Whether a track segment between two tiles is legal (adjacent, on buildable land). */
@@ -215,6 +252,10 @@ export function buildStation(
 ): boolean {
   const w = state.world;
   if (!inBounds(w, x, y) || terrainAt(x, y) === 'sea') return false;
+  // Milestone 6 U8 (exploit gate, defense in depth): refuse a degenerate
+  // same-tile (or, per `MIN_STATION_SPACING_TILES`, too-close) re-site —
+  // see that constant's own docblock for why the threshold is where it is.
+  if (violatesStationSpacing(state, x, y)) return false;
   const cost = STATION_COST[Math.min(STATION_COST.length - 1, Math.max(0, radius - 1))];
   if (state.moneyCents < cost) return false;
   state.stations.push({ id, x, y, radius, stationType });
@@ -270,6 +311,10 @@ export function moveStation(state: GameState, stationId: string, x: number, y: n
   const w = state.world;
   if (!inBounds(w, x, y) || terrainAt(x, y) === 'sea') return false;
   if (x === station.x && y === station.y) return false; // not a relocation — refuse rather than charge for nothing
+  // Milestone 6 U8: same spacing guard `buildStation` applies, excluding
+  // the station being moved itself — its own (about-to-be-vacated) tile
+  // must never block its own relocation.
+  if (violatesStationSpacing(state, x, y, station.id)) return false;
   const cost = STATION_COST[Math.min(STATION_COST.length - 1, Math.max(0, station.radius - 1))];
   if (state.moneyCents < cost) return false;
 

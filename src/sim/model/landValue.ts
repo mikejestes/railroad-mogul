@@ -83,6 +83,40 @@ export const STATION_UPLIFT_BASE_CENTS = 1_500_00;
  *  district development"). */
 export const STATION_UPLIFT_DEV_BONUS_CENTS = 1_500_00;
 
+/**
+ * Ceiling on the TOTAL additive `station-uplift` item at any one point
+ * (milestone 6 U8's exploit gate). Without this, `stationUpliftItem` (below)
+ * sums every covering station's uplift with no bound at all: a player can
+ * buy out a catchment, then site any number of extra stations on or near
+ * the same tile (each costing as little as `STATION_COST[0]`) purely to
+ * inflate `landValueAt` at the parcels they already own, then `sellLand`
+ * for a same-tick profit that routes entirely around the charter /
+ * anticipation / spread anti-exploit design (KTD1/KTD2/KTD7) — verified:
+ * +$400-plus for a handful of $50-$100 stations ringed around an owned
+ * catchment, unbounded as more are added.
+ *
+ * The cap is set at twice a single station's own maximum possible peak
+ * (`STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS`, i.e. one
+ * station at distance 0 and full (1.0) development) — enough headroom for
+ * the legitimate case this composes for (two genuinely separate, nearby
+ * stations, each serving its own city/district, whose catchments overlap
+ * at the edge — `landValue.test.ts`'s "overlapping catchments compose
+ * additively" scenario, and real play with two nearby towns each earning
+ * their own station), but not enough for a third, fourth, ... Nth station
+ * stacked on the same neighborhood to add anything further. Once two
+ * stations' worth of uplift is already priced in, every additional stacked
+ * station buys the exploiter nothing: `sellLand`'s `SALE_SPREAD_FRACTION`
+ * (10%) plus each new station's own build cost then dominates any residual
+ * (capped) delta, making stacking strictly a net loss — see
+ * `tests/sim/landEconomics.e2e.test.ts`'s station-stacking exploit-gate
+ * test. Two DIFFERENT, meaningfully separated stations at genuine peak
+ * (distance 0 each, impossible in practice since one point can be at
+ * distance 0 from at most one station, but the cap is sized against the
+ * theoretical max so it is never the thing that quietly under-prices a
+ * real two-city overlap) still compose additively up to this ceiling.
+ */
+export const STATION_UPLIFT_CAP_CENTS = 2 * (STATION_UPLIFT_BASE_CENTS + STATION_UPLIFT_DEV_BONUS_CENTS);
+
 /** Peak district-development uplift, reached at development 1.0 at the
  *  district's own anchor — a broader neighborhood-prosperity halo, distinct
  *  from (and reaching further than) any single station's own catchment
@@ -145,9 +179,14 @@ function terrainBaseItem(wx: number, wy: number): LandValueItem {
 
 /** Station-uplift item (R2, AE1): summed across every station whose
  *  catchment covers `(wx, wy)` — overlapping catchments compose additively,
- *  per the plan's own test scenario. Uses the shared `inCatchment` (matching
+ *  per the plan's own test scenario, up to `STATION_UPLIFT_CAP_CENTS` (U8's
+ *  exploit gate — see that constant's own docblock for why the cap exists
+ *  and why it is sized where it is). Uses the shared `inCatchment` (matching
  *  falloff-zero exactly at the catchment edge, Chebyshev) and
- *  `stationUpliftShapeCents` for the peak/falloff math (milestone 6, KTD2). */
+ *  `stationUpliftShapeCents` for the peak/falloff math (milestone 6, KTD2).
+ *  The cap is applied to the summed total, never per-station, so it never
+ *  changes the shape any single covering station contributes — only bounds
+ *  how many of them can stack before the rest becomes free. */
 function stationUpliftItem(state: GameState, wx: number, wy: number): LandValueItem {
   let cents = 0;
   for (const station of state.stations) {
@@ -159,7 +198,8 @@ function stationUpliftItem(state: GameState, wx: number, wy: number): LandValueI
     const development = district ? clamp01(district.development) : 0;
     cents += stationUpliftShapeCents(station.radius, development, dist);
   }
-  return { name: 'station-uplift', cents: Math.round(cents) };
+  const capped = Math.min(cents, STATION_UPLIFT_CAP_CENTS);
+  return { name: 'station-uplift', cents: Math.round(capped) };
 }
 
 /** District-development item (R3's value substrate): summed across every
