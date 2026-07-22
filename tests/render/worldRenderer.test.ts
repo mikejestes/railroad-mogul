@@ -13,7 +13,12 @@ import {
   CITY_DOT_BASE_PX,
   CITY_LABEL_FONT_PX,
   stationGlyphFor,
+  landOverlayColor,
+  LAND_OVERLAY_MIN_CENTS,
+  LAND_OVERLAY_MAX_CENTS,
+  ownershipCueRects,
 } from '../../src/render/worldRenderer.ts';
+import { PARCELS_PER_TILE_EDGE, type Parcel } from '../../src/sim/model/land.ts';
 import type { Rect } from '../../src/render/camera.ts';
 import type { StepCost } from '../../src/sim/model/trackCost.ts';
 import type { StationType } from '../../src/sim/model/track.ts';
@@ -189,5 +194,61 @@ describe('stationGlyphFor (milestone 5 U1, R6, KTD3)', () => {
   it('freight and passenger each get their own non-square mark', () => {
     expect(stationGlyphFor('freight')).toBe('diamond');
     expect(stationGlyphFor('passenger')).toBe('circle');
+  });
+});
+
+describe('landOverlayColor (milestone 6 U6, KTD10, KTD7)', () => {
+  it('is monotonic: a strictly higher price never reads as a strictly lower color channel sum', () => {
+    const cheap = landOverlayColor(LAND_OVERLAY_MIN_CENTS);
+    const mid = landOverlayColor((LAND_OVERLAY_MIN_CENTS + LAND_OVERLAY_MAX_CENTS) / 2);
+    const dear = landOverlayColor(LAND_OVERLAY_MAX_CENTS);
+    const channelSum = (color: number) => ((color >> 16) & 0xff) + ((color >> 8) & 0xff) + (color & 0xff);
+    expect(channelSum(mid)).toBeGreaterThanOrEqual(channelSum(cheap));
+    expect(channelSum(dear)).toBeGreaterThanOrEqual(channelSum(mid));
+  });
+
+  it('is bounded: values far outside the calibrated range clamp to the same color as the range endpoints', () => {
+    expect(landOverlayColor(-1_000_000_00)).toBe(landOverlayColor(LAND_OVERLAY_MIN_CENTS));
+    expect(landOverlayColor(1_000_000_00)).toBe(landOverlayColor(LAND_OVERLAY_MAX_CENTS));
+  });
+
+  it('always returns a valid 24-bit color', () => {
+    for (const cents of [LAND_OVERLAY_MIN_CENTS, 0, 300_00, LAND_OVERLAY_MAX_CENTS, -50_00, 999_999_99]) {
+      const color = landOverlayColor(cents);
+      expect(color).toBeGreaterThanOrEqual(0);
+      expect(color).toBeLessThanOrEqual(0xffffff);
+      expect(Number.isInteger(color)).toBe(true);
+    }
+  });
+});
+
+describe('ownershipCueRects (milestone 6 U7, KTD4/KTD5)', () => {
+  function makeParcel(tileX: number, tileY: number, subX = 0, subY = 0): Parcel {
+    return {
+      id: `p-${tileX}-${tileY}-${subX}-${subY}`,
+      address: { tileX, tileY, subX, subY },
+      pricePaidCents: 100_00,
+      acquiredDay: 0,
+      valueItemsAtPurchase: [],
+    };
+  }
+
+  it('produces nothing for an empty parcel list (unowned parcels produce nothing)', () => {
+    expect(ownershipCueRects([])).toEqual([]);
+  });
+
+  it('maps one owned parcel to exactly one world-space rect of the parcel sub-cell size', () => {
+    const rects = ownershipCueRects([makeParcel(10, 5, 0, 0)]);
+    expect(rects).toHaveLength(1);
+    expect(rects[0].size).toBeCloseTo(1 / PARCELS_PER_TILE_EDGE, 10);
+    // The rect is centered on the parcel's own center (KTD4).
+    expect(rects[0].x + rects[0].size / 2).toBeCloseTo(10 + 0.25, 10);
+    expect(rects[0].y + rects[0].size / 2).toBeCloseTo(5 + 0.25, 10);
+  });
+
+  it('maps N owned parcels to N rects, one per parcel, in the same order', () => {
+    const parcels = [makeParcel(1, 1), makeParcel(2, 2), makeParcel(3, 3)];
+    const rects = ownershipCueRects(parcels);
+    expect(rects).toHaveLength(3);
   });
 });

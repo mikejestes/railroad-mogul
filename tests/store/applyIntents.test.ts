@@ -5,6 +5,7 @@ import { findPath } from '../../src/sim/pathfinding.ts';
 import type { Intent } from '../../src/store/gameStore.ts';
 import { STATION_COST } from '../../src/sim/model/track.ts';
 import { DISTRICT_FOOTPRINT_TILES, accrueDelivery, jacobsHealth, activeDistrictFor } from '../../src/sim/model/districts.ts';
+import { addressAt, charterFeeCents, purchasePrice, CHARTER_WINDOW_DAYS } from '../../src/sim/model/land.ts';
 
 describe('applyIntent exhaustiveness (U3)', () => {
   it('throws rather than silently doing nothing on an unrecognized intent kind', () => {
@@ -334,6 +335,126 @@ describe('moveStation intent (milestone 5 U7, R11/R12/R13/R14, KTD8)', () => {
       const stationId = state.stations[0].id;
       applyIntent(state, { kind: 'moveStation', stationId, x: OX + DISTRICT_FOOTPRINT_TILES + 2, y: OY });
       return state;
+    };
+    expect(serialize(run())).toBe(serialize(run()));
+  });
+});
+
+describe('land-economics intents (milestone 6 U2/U3, KTD1/KTD2/KTD3/KTD7/KTD8)', () => {
+  const OX = 17;
+  const OY = 0;
+
+  function buildableWorld(): GameState {
+    const s = createGameState(1);
+    s.world = { width: OX + 12, height: OY + 4 };
+    s.moneyCents = 1_000_000_00;
+    return s;
+  }
+
+  it('charterRoute debits exactly the fee, records the charter with the next serial id, and grants corridor rights', () => {
+    const s = buildableWorld();
+    const before = s.moneyCents;
+
+    applyIntent(s, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+
+    expect(s.charters).toHaveLength(1);
+    const charter = s.charters[0];
+    expect(charter.id).toBe('chr-0');
+    expect(charter.status).toBe('live');
+    expect(charter.feePaidCents).toBe(charterFeeCents(charter.surveyedCostCents));
+    expect(before - s.moneyCents).toBe(charter.feePaidCents);
+    expect(charter.expiresDay).toBe(CHARTER_WINDOW_DAYS);
+    expect(s.nextCharterId).toBe(1);
+  });
+
+  it('an unaffordable charterRoute is a no-op with byte-identical state', () => {
+    const s = buildableWorld();
+    s.moneyCents = 0;
+    const before = serialize(s);
+
+    applyIntent(s, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+
+    expect(serialize(s)).toBe(before);
+    expect(s.charters).toHaveLength(0);
+  });
+
+  it('a charterRoute with a sea waypoint is a no-op', () => {
+    const s = buildableWorld();
+    const before = serialize(s);
+    applyIntent(s, { kind: 'charterRoute', waypoints: [{ x: 0, y: OY }, { x: OX, y: OY }] });
+    expect(serialize(s)).toBe(before);
+    expect(s.charters).toHaveLength(0);
+  });
+
+  it('building the chartered route via commitRoute consumes the charter (KTD1)', () => {
+    const s = buildableWorld();
+    applyIntent(s, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+    expect(s.charters[0].status).toBe('live');
+
+    applyIntent(s, { kind: 'commitRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+
+    expect(s.charters[0].status).toBe('consumed');
+    expect(s.routes).toHaveLength(1);
+  });
+
+  it('committing an unrelated, far-away route does not consume a live charter', () => {
+    const s = buildableWorld();
+    applyIntent(s, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+    applyIntent(s, { kind: 'commitRoute', waypoints: [{ x: OX, y: OY + 3 }, { x: OX + 4, y: OY + 3 }] });
+    expect(s.charters[0].status).toBe('live');
+  });
+
+  it('buyLand debits exactly purchasePrice and records the parcel with the next serial id', () => {
+    const s = buildableWorld();
+    applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+    const address = addressAt(OX + 1, OY);
+    const price = purchasePrice(s, address);
+    const before = s.moneyCents;
+
+    applyIntent(s, { kind: 'buyLand', address });
+
+    expect(s.parcels).toHaveLength(1);
+    expect(s.parcels[0].id).toBe('parcel-0');
+    expect(before - s.moneyCents).toBe(price);
+    expect(s.nextParcelId).toBe(1);
+  });
+
+  it('a rights-refused buyLand is a no-op with byte-identical state', () => {
+    const s = buildableWorld();
+    const before = serialize(s);
+    applyIntent(s, { kind: 'buyLand', address: addressAt(OX, OY) });
+    expect(serialize(s)).toBe(before);
+    expect(s.parcels).toHaveLength(0);
+  });
+
+  it('sellLand credits the sale price and removes the parcel; an unknown id is a no-op', () => {
+    const s = buildableWorld();
+    applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+    const address = addressAt(OX + 1, OY);
+    applyIntent(s, { kind: 'buyLand', address });
+    const parcelId = s.parcels[0].id;
+    const before = s.moneyCents;
+
+    applyIntent(s, { kind: 'sellLand', parcelId });
+
+    expect(s.parcels).toHaveLength(0);
+    expect(s.moneyCents).toBeGreaterThan(before);
+
+    const beforeUnknown = serialize(s);
+    applyIntent(s, { kind: 'sellLand', parcelId: 'ghost' });
+    expect(serialize(s)).toBe(beforeUnknown);
+  });
+
+  it('replaying charter -> commitRoute -> buyLand -> sellLand from the same seed is byte-identical', () => {
+    const run = () => {
+      const s = buildableWorld();
+      applyIntent(s, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+      applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+      applyIntent(s, { kind: 'commitRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+      const address = addressAt(OX + 3, OY);
+      applyIntent(s, { kind: 'buyLand', address });
+      applyIntent(s, { kind: 'sellLand', parcelId: s.parcels[0]?.id ?? '' });
+      return s;
     };
     expect(serialize(run())).toBe(serialize(run()));
   });

@@ -11,6 +11,9 @@ import type { District } from '../sim/model/districts.ts';
 import { generateDistrictScene, type DistrictScene } from '../world/streets.ts';
 import { DEFAULT_STATION_TYPE, type StationType, type DerelictSite } from '../sim/model/track.ts';
 import { landValueAt as runLandValueAt, type LandValue } from '../sim/model/landValue.ts';
+import type { Charter, Parcel, ParcelAddress } from '../sim/model/land.ts';
+import { purchasePrice as runPurchasePrice } from '../sim/model/land.ts';
+import { parcelValuation as runParcelValuation, type ParcelValuation } from '../store/selectors.ts';
 
 /**
  * Dev-only inspection & control hook (installed behind import.meta.env.DEV).
@@ -77,6 +80,22 @@ import { landValueAt as runLandValueAt, type LandValue } from '../sim/model/land
  * cut and the derelict yard — outlive a relocation) without depending on the
  * rAF loop. `derelictSites` exposes the live, append-only list the same way
  * `districts` already does.
+ *
+ * Land-economics-and-speculation milestone U8 closes the whole game's
+ * feature set the same way: `charterRoute`, `buyLand`, and `sellLand`
+ * follow the `commitRoute`/`buildStation` precedent exactly — the real
+ * intents the map's build-mode click flow (`main.ts`, U6) dispatches,
+ * applied immediately via `applyNow` so a browser driver can assert the
+ * whole charter -> buy -> build -> feed -> collect arc without depending on
+ * the rAF loop, and a refused/unaffordable attempt is a no-op exactly as
+ * `applyIntent` already guarantees. `parcelValuation` re-exports
+ * `store/selectors.ts`'s pure read-model derivation verbatim (read-only,
+ * KTD6) so a driver can assert AE4's "current value and the reason for the
+ * change are both legible" by value — current value, delta, and the
+ * item-by-item attribution — the same "assert on state, not pixels"
+ * standing rule every prior milestone's debug-hook addition follows.
+ * `charters`/`parcels` expose the live records the same live-reference
+ * pattern `districts`/`derelictSites` already use.
  */
 export interface DebugApi {
   /** Live game state (always current). */
@@ -146,6 +165,32 @@ export interface DebugApi {
    *  KTD8/KTD9) — the same live-reference pattern `districts` already
    *  follows (through the existing version channel, no second store). */
   readonly derelictSites: readonly DerelictSite[];
+  /** Charter a surveyed corridor (milestone 6 U8, KTD1) — dispatches the
+   *  same `charterRoute` intent applied immediately via `applyNow`. A no-op
+   *  if the survey is refused or the fee is unaffordable. */
+  charterRoute(waypoints: Tile[]): void;
+  /** Buy the parcel at `address` (milestone 6 U8, KTD2/KTD3/KTD8) —
+   *  dispatches the same `buyLand` intent applied immediately. A no-op if
+   *  rights are refused or the price is unaffordable. */
+  buyLand(address: ParcelAddress): void;
+  /** Sell an owned parcel by id (milestone 6 U8, KTD7) — dispatches the
+   *  same `sellLand` intent applied immediately. A no-op for an unknown id. */
+  sellLand(parcelId: string): void;
+  /** Read-only preview of what `buyLand` would charge right now (milestone 6
+   *  U8, KTD2) — the exact `purchasePrice` function `buyLand` prices from.
+   *  Never mutates `state`. */
+  purchasePrice(address: ParcelAddress): number;
+  /** Current value, delta, and item-by-item attribution for an owned parcel
+   *  (milestone 6 U8, KTD6, R8/R9/AE4) — re-exports
+   *  `store/selectors.ts`'s `parcelValuation` verbatim. `null` for an
+   *  unknown parcel id. */
+  parcelValuation(parcelId: string): ParcelValuation | null;
+  /** Live charter records (milestone 6 U8) — the same live-reference
+   *  pattern `districts` already follows. */
+  readonly charters: readonly Charter[];
+  /** Live owned-parcel records (milestone 6 U8, R11) — the same
+   *  live-reference pattern `districts`/`charters` already follow. */
+  readonly parcels: readonly Parcel[];
   /** Snapshot of headline numbers for quick assertions. */
   summary(): {
     tick: number;
@@ -219,6 +264,17 @@ export function installDebugHook(store: GameStore, clock: GameClock, seed: numbe
     landValueAt: (wx, wy) => runLandValueAt(store.getState(), wx, wy),
     get derelictSites() {
       return store.getState().derelictSites;
+    },
+    charterRoute: (waypoints) => applyNow({ kind: 'charterRoute', waypoints }),
+    buyLand: (address) => applyNow({ kind: 'buyLand', address }),
+    sellLand: (parcelId) => applyNow({ kind: 'sellLand', parcelId }),
+    purchasePrice: (address) => runPurchasePrice(store.getState(), address),
+    parcelValuation: (parcelId) => runParcelValuation(store.getState(), parcelId),
+    get charters() {
+      return store.getState().charters;
+    },
+    get parcels() {
+      return store.getState().parcels;
     },
     setCamera: ({ x, y, scale }) => {
       // Reuse the same methods real wheel/pointer input drives (zoomAt,

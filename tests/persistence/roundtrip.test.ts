@@ -5,12 +5,13 @@ import {
   deserializeSave,
 } from '../../src/persistence/saveStore.ts';
 import { generateGame } from '../../src/world/generate.ts';
-import { serialize, SCHEMA_VERSION } from '../../src/sim/state.ts';
+import { serialize, SCHEMA_VERSION, type GameState } from '../../src/sim/state.ts';
 import { tick } from '../../src/sim/tick.ts';
 import { GRID_HEIGHT, GRID_WIDTH, terrainAt, elevationAt } from '../../src/world/geography.ts';
 import { applyIntent } from '../../src/store/applyIntents.ts';
 import type { Intent } from '../../src/store/gameStore.ts';
 import { generateDistrictScene } from '../../src/world/streets.ts';
+import { addressAt } from '../../src/sim/model/land.ts';
 
 describe('save/load persistence', () => {
   it('round-trips to an identical state', () => {
@@ -82,12 +83,12 @@ describe('determinism, persistence, and schema migration (U7, KTD9, R9, R10)', (
     );
   });
 
-  it('a v5 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
-    expect(SCHEMA_VERSION).toBe(5);
+  it('a v6 save round-trips and resumes byte-identically, matching the snapshot-and-replay pattern', () => {
+    expect(SCHEMA_VERSION).toBe(6);
     const live = generateGame(21);
     for (let i = 0; i < 12; i++) tick(live);
     const snapshot = serializeSave(live);
-    expect((JSON.parse(snapshot) as { version: number }).version).toBe(5);
+    expect((JSON.parse(snapshot) as { version: number }).version).toBe(6);
 
     for (let i = 0; i < 12; i++) tick(live);
     const liveFinal = serialize(live);
@@ -232,6 +233,64 @@ describe('severance, station type, and derelict persistence (milestone 5 U7, R11
       applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
       applyIntent(s, { kind: 'moveStation', stationId: s.stations[0].id, x: OX + 3, y: OY });
       for (let i = 0; i < 15; i++) tick(s);
+      return s;
+    };
+    expect(serialize(run())).toBe(serialize(run()));
+  });
+});
+
+describe('land-economics persistence (milestone 6, KTD11)', () => {
+  const OX = 17;
+  const OY = 0;
+
+  function buildableWorld(): GameState {
+    const live = generateGame(21);
+    live.moneyCents = 1_000_000_00;
+    live.world = { width: 40, height: 28 };
+    return live;
+  }
+
+  it('a save with a charter, an owned parcel, and land-system ticks round-trips and resumes byte-identically at schema v6', () => {
+    const live = buildableWorld();
+    applyIntent(live, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+    applyIntent(live, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+    expect(live.charters).toHaveLength(1);
+    applyIntent(live, { kind: 'buyLand', address: addressAt(OX + 0.5, OY) });
+    expect(live.parcels).toHaveLength(1);
+    for (let i = 0; i < 20; i++) tick(live);
+
+    const restored = deserializeSave(serializeSave(live));
+    expect(serialize(restored)).toBe(serialize(live));
+    expect(restored.charters).toEqual(live.charters);
+    expect(restored.parcels).toEqual(live.parcels);
+  });
+
+  it('a run resumed from a snapshot taken mid-charter ticks identically to an uninterrupted run', () => {
+    const liveLive = buildableWorld();
+    applyIntent(liveLive, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+    applyIntent(liveLive, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+    applyIntent(liveLive, { kind: 'buyLand', address: addressAt(OX + 0.5, OY) });
+    for (let i = 0; i < 15; i++) tick(liveLive);
+    const snapshot = serializeSave(liveLive);
+
+    for (let i = 0; i < 15; i++) tick(liveLive);
+    const liveFinal = serialize(liveLive);
+
+    const resumed = deserializeSave(snapshot);
+    for (let i = 0; i < 15; i++) tick(resumed);
+    expect(serialize(resumed)).toBe(liveFinal);
+  });
+
+  it('replaying the same intent sequence (charter, buy, tick, sell) from the same seed produces byte-identical serialized state', () => {
+    const run = () => {
+      const s = buildableWorld();
+      applyIntent(s, { kind: 'buildStation', x: OX, y: OY, radius: 2 });
+      applyIntent(s, { kind: 'charterRoute', waypoints: [{ x: OX, y: OY }, { x: OX + 4, y: OY }] });
+      const address = addressAt(OX + 0.5, OY);
+      applyIntent(s, { kind: 'buyLand', address });
+      for (let i = 0; i < 10; i++) tick(s);
+      applyIntent(s, { kind: 'sellLand', parcelId: s.parcels[0]?.id ?? '' });
+      for (let i = 0; i < 5; i++) tick(s);
       return s;
     };
     expect(serialize(run())).toBe(serialize(run()));

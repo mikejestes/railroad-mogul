@@ -80,6 +80,14 @@ export function deserializeSave(json: string): GameState {
  * `cuts` can only honestly be `[]`, which would silently understate real
  * severance a v4 save's own track/station data could imply, the same
  * "refuse rather than guess" rationale as every prior bump.
+ *
+ * v5 -> v6 (land-economics-and-speculation milestone, KTD11): schema 6 adds
+ * `state.charters`, `state.parcels`, `nextCharterId`, and `nextParcelId`
+ * (`sim/model/land.ts`). No v5 save has ever chartered a route or bought a
+ * parcel (the intents did not exist under schema 5), so unlike `cuts` above
+ * there is no understated history at risk — but `migrate` still refuses the
+ * mismatch outright rather than special-casing an all-empty backfill, the
+ * same uniform "refuse rather than guess" rule every prior bump follows.
  */
 function migrate(state: GameState, fromVersion: number): GameState {
   if (fromVersion === SCHEMA_VERSION) return state;

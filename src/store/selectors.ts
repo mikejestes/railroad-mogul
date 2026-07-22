@@ -7,6 +7,13 @@ import { findPath } from '../sim/pathfinding.ts';
 import type { Train } from '../sim/model/trains.ts';
 import type { Industry } from '../sim/model/industries.ts';
 import { OUTPUT_CAP } from '../sim/systems/production.ts';
+import {
+  currentParcelValueAt,
+  ALL_PARCEL_VALUE_ITEM_NAMES,
+  type ParcelAddress,
+  type ParcelValueItemName,
+  type ParcelValueItem,
+} from '../sim/model/land.ts';
 
 /**
  * Read-model selectors shared by the map overlays (U9) and the management UI
@@ -164,4 +171,65 @@ export function industryStarved(industry: Industry): boolean {
  */
 export function industryOutputPressure(industry: Industry): number {
   return Math.min(1, industry.outputStock / OUTPUT_CAP);
+}
+
+/** One named cause of a parcel's value having moved (R9, AE4) — positive for
+ *  appreciation, negative for depreciation. */
+export interface AttributionItem {
+  name: ParcelValueItemName;
+  cents: number;
+}
+
+/** Milestone 6 U5 (KTD6, R8/R9): what a held parcel is worth now, what it
+ *  cost, and why the two differ — everything `LandPanel` (U6) renders
+ *  verbatim. */
+export interface ParcelValuation {
+  parcelId: string;
+  address: ParcelAddress;
+  pricePaidCents: number;
+  acquiredDay: number;
+  currentValueCents: number;
+  deltaCents: number;
+  /** Item-by-item diff of the current itemized value against
+   *  `valueItemsAtPurchase` (KTD6), non-zero entries only, sorted by
+   *  magnitude (largest cause first, AE4). Walks the fixed
+   *  `ALL_PARCEL_VALUE_ITEM_NAMES` order rather than a `Map`/`Set` key
+   *  iteration, so the result is deterministic independent of item
+   *  insertion order. */
+  attribution: AttributionItem[];
+}
+
+function itemCents(items: ParcelValueItem[], name: ParcelValueItemName): number {
+  return items.find((i) => i.name === name)?.cents ?? 0;
+}
+
+/**
+ * Current value, delta, and item-by-item attribution for an owned parcel
+ * (milestone 6 U5, KTD6, R8/R9/AE4/AE5). `null` for an unknown `parcelId`.
+ * Pure read-model derivation — `currentParcelValueAt` is never stored, so
+ * this is recomputed from `landValueAt` and any live charter every call
+ * (the same "derived per query" discipline milestone 5's `landValueAt`
+ * itself follows).
+ */
+export function parcelValuation(state: GameState, parcelId: string): ParcelValuation | null {
+  const parcel = state.parcels.find((p) => p.id === parcelId);
+  if (!parcel) return null;
+
+  const current = currentParcelValueAt(state, parcel.address);
+  const attribution: AttributionItem[] = ALL_PARCEL_VALUE_ITEM_NAMES.map((name) => ({
+    name,
+    cents: itemCents(current.items, name) - itemCents(parcel.valueItemsAtPurchase, name),
+  }))
+    .filter((item) => item.cents !== 0)
+    .sort((a, b) => Math.abs(b.cents) - Math.abs(a.cents));
+
+  return {
+    parcelId: parcel.id,
+    address: parcel.address,
+    pricePaidCents: parcel.pricePaidCents,
+    acquiredDay: parcel.acquiredDay,
+    currentValueCents: current.totalCents,
+    deltaCents: current.totalCents - parcel.pricePaidCents,
+    attribution,
+  };
 }

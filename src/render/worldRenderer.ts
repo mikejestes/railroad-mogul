@@ -10,6 +10,7 @@ import type { Tile } from '../sim/pathfinding.ts';
 import type { StepCost, TrackStructure } from '../sim/model/trackCost.ts';
 import { stationTypeOf, type StationType } from '../sim/model/track.ts';
 import { DistrictRenderer } from './districtRenderer.ts';
+import { parcelCenter, PARCELS_PER_TILE_EDGE, type Parcel } from '../sim/model/land.ts';
 
 /**
  * Draws the whole world onto the map canvas (U3/U5/U6/U9). Terrain is drawn
@@ -138,6 +139,20 @@ export const CITY_LABEL_FONT_PX = 10;
  * visible, not invisible. */
 export const INDUSTRY_ALPHA_MIN = 0.4;
 export const INDUSTRY_ALPHA_MAX = 1;
+
+/** Fill alpha for the land-value overlay's tinted ground cells (milestone 6
+ *  U6) — translucent enough that track/stations/rivers drawn above it stay
+ *  fully legible while buy mode is armed. */
+export const LAND_OVERLAY_ALPHA = 0.45;
+
+/** Stroke width (apparent screen pixels, scale-compensated) for the
+ *  ownership-cue outline (milestone 6 U7). */
+export const OWNERSHIP_STROKE_PX = 1.5;
+
+/** Ownership-cue outline color (milestone 6 U7) — a bright, distinct hue
+ *  from every other layer's palette so an owned parcel reads unmistakably
+ *  even against the buy-mode value overlay's own tint. */
+export const OWNERSHIP_COLOR = 0x9d4edd;
 
 /**
  * Below this population, a city's name label is suppressed at the
@@ -293,6 +308,83 @@ export function structureMarksFor(overlay: SurveyOverlay): StructureMark[] {
   return marks;
 }
 
+// --- Land-value overlay (milestone 6 U6, KTD10) -----------------------------
+
+/** One tinted cell of the buy-mode value overlay — a world-space rect
+ *  (`x`, `y`, `size`, world units) and the cents `render` tints it by.
+ *  Deliberately decoupled from `sim/model/land.ts`'s `ParcelAddress`: the
+ *  renderer only needs a rect and a number, never parcel addressing itself
+ *  (`main.ts` is the one place that turns addresses into cells, the same
+ *  orchestration split the survey overlay already follows). */
+export interface LandOverlayCell {
+  x: number;
+  y: number;
+  size: number;
+  cents: number;
+}
+
+export interface LandOverlay {
+  cells: LandOverlayCell[];
+}
+
+/** Value range the overlay's color ramp is calibrated against (KTD10) — a
+ *  parcel at or below `LAND_OVERLAY_MIN_CENTS` reads at the coolest end of
+ *  the ramp, at or above `LAND_OVERLAY_MAX_CENTS` at the warmest; every cell
+ *  is a floating-point exponent, never a "yes"/"no" tint, so the color
+ *  itself carries where a price sits in the pricing model's own range. */
+export const LAND_OVERLAY_MIN_CENTS = 0;
+export const LAND_OVERLAY_MAX_CENTS = 6_000_00;
+
+/**
+ * Pure mapping from a cell's price/value (in cents) to a fill color (KTD10).
+ * Monotonic (a higher price never reads as a cooler color) and bounded (the
+ * output never leaves the low/high palette regardless of how far outside
+ * `[LAND_OVERLAY_MIN_CENTS, LAND_OVERLAY_MAX_CENTS]` `cents` falls) — the
+ * one piece of the overlay the repo's no-rendering-tests policy (KTD7)
+ * expects covered, since it decides *what* would render, not how PixiJS
+ * draws it.
+ */
+export function landOverlayColor(cents: number): number {
+  const t = Math.min(
+    1,
+    Math.max(0, (cents - LAND_OVERLAY_MIN_CENTS) / (LAND_OVERLAY_MAX_CENTS - LAND_OVERLAY_MIN_CENTS)),
+  );
+  const lowR = 0x21, lowG = 0x3a, lowB = 0x5e; // cool slate-blue: cheap land
+  const highR = 0xe0, highG = 0xa1, highB = 0x2c; // warm gold: dear land
+  const r = Math.round(lowR + (highR - lowR) * t);
+  const g = Math.round(lowG + (highG - lowG) * t);
+  const b = Math.round(lowB + (highB - lowB) * t);
+  return (r << 16) | (g << 8) | b;
+}
+
+/** A world-space rect for one owned parcel's ownership cue (milestone 6 U7,
+ *  KTD5). */
+export interface OwnershipCueRect {
+  x: number;
+  y: number;
+  size: number;
+}
+
+/**
+ * Map owned parcels to the world-space rects an ownership-cue outline draws
+ * at (milestone 6 U7, KTD4/KTD5): unowned parcels produce nothing, since
+ * there is nothing to map — `state.parcels` is the only input, never scene
+ * layout (the sim's own purity guard extends to this pure helper: it reads
+ * `Parcel.address` alone, the same *ownership* parcel `sim/model/land.ts`
+ * defines, and never touches milestone 4's scene "parcels" — KTD4's
+ * terminology guard). Drawing the cue from the ownership parcel's own
+ * world-rect, rather than tagging a milestone-4 scene footprint, is
+ * deliberate: a world-to-scene-geometry mapping does not exist and this
+ * unit does not invent one.
+ */
+export function ownershipCueRects(parcels: ReadonlyArray<Parcel>): OwnershipCueRect[] {
+  const size = 1 / PARCELS_PER_TILE_EDGE;
+  return parcels.map((p) => {
+    const center = parcelCenter(p.address);
+    return { x: center.x - size / 2, y: center.y - size / 2, size };
+  });
+}
+
 /**
  * Draw one dashed line segment from `(ax, ay)` to `(bx, by)`, continuing the
  * dash/gap phase carried in `phase` (mutated) so a multi-segment polyline's
@@ -362,10 +454,12 @@ export class WorldRenderer {
   readonly container = new Container();
   private chunkManager: TerrainChunkManager;
   private districtRenderer: DistrictRenderer;
+  private landOverlayLayer = new Graphics();
   private riverLayer = new Graphics();
   private trackLayer = new Graphics();
   private industryLayer = new Graphics();
   private stationLayer = new Graphics();
+  private ownershipLayer = new Graphics();
   private cityLayer = new Container();
   private trainLayer = new Graphics();
   private overlayLayer = new Graphics();
@@ -378,16 +472,20 @@ export class WorldRenderer {
   constructor(renderer: Renderer, private tilePx: number) {
     this.chunkManager = new TerrainChunkManager(renderer, tilePx);
     this.districtRenderer = new DistrictRenderer(renderer, tilePx);
-    // Back to front: terrain -> districts (street tier) -> rivers -> track ->
-    // industries -> stations -> cities -> trains -> survey overlay (drawn
+    // Back to front: terrain -> districts (street tier) -> land-value overlay
+    // (milestone 6 U6, a ground tint — under everything that draws on top of
+    // the ground) -> rivers -> track -> industries -> stations -> ownership
+    // cues (milestone 6 U7) -> cities -> trains -> survey overlay (drawn
     // above everything else, U6).
     this.container.addChild(
       this.chunkManager.container,
       this.districtRenderer.container,
+      this.landOverlayLayer,
       this.riverLayer,
       this.trackLayer,
       this.industryLayer,
       this.stationLayer,
+      this.ownershipLayer,
       this.cityLayer,
       this.trainLayer,
       this.overlayLayer,
@@ -401,13 +499,28 @@ export class WorldRenderer {
     this.districtRenderer.destroy();
   }
 
-  render(state: GameState, camera: Camera, overlay?: SurveyOverlay): void {
+  render(state: GameState, camera: Camera, overlay?: SurveyOverlay, landOverlay?: LandOverlay): void {
     this.chunkManager.update(camera, state.world.width, state.world.height);
     this.districtRenderer.update(state, camera);
     const t = this.tilePx;
 
     const { scale, tier } = camera;
     const visible = camera.visibleWorldRect();
+
+    // Land-value overlay (milestone 6 U6, KTD10): tinted ground rects, one
+    // per cell `main.ts` computed for the current buy-mode arm/camera view —
+    // `undefined` outside land mode, the same "nothing to clear-and-skip
+    // beyond the unconditional `.clear()`" shape the survey overlay below
+    // follows.
+    this.landOverlayLayer.clear();
+    if (landOverlay) {
+      for (const cell of landOverlay.cells) {
+        if (!isWithinVisibleBounds({ x: cell.x, y: cell.y }, visible, VISIBLE_MARGIN_TILES)) continue;
+        this.landOverlayLayer
+          .rect(cell.x * t, cell.y * t, cell.size * t, cell.size * t)
+          .fill({ color: landOverlayColor(cell.cents), alpha: LAND_OVERLAY_ALPHA });
+      }
+    }
 
     // Rivers (U6): a jittered polyline layer between terrain and track, so a
     // structure the survey panel itemizes over a river has a river to show
@@ -509,6 +622,24 @@ export class WorldRenderer {
       }
       if (tier !== 'continent') {
         this.stationLayer.circle(cx, cy, s.radius * t).stroke({ color: COLORS.catchment, width: catchmentStroke });
+      }
+    }
+
+    // Ownership cues (milestone 6 U7, KTD4/KTD5): a thin outline on every
+    // owned parcel, street tier only — the granularity at which an
+    // individual sub-tile parcel is legible at all (matches the buy-mode
+    // value overlay's own "parcel-level at street tier" rule, KTD10's
+    // Assumptions). `ownershipCueRects` is the pure mapping this draws;
+    // ownership changes nothing about what the scene itself generates
+    // (R2/KTD5) — this is only a readability cue over it.
+    this.ownershipLayer.clear();
+    if (tier === 'street') {
+      const ownershipStroke = scaleCompensatedSize(OWNERSHIP_STROKE_PX, scale);
+      for (const cell of ownershipCueRects(state.parcels)) {
+        if (!isWithinVisibleBounds({ x: cell.x, y: cell.y }, visible, VISIBLE_MARGIN_TILES)) continue;
+        this.ownershipLayer
+          .rect(cell.x * t, cell.y * t, cell.size * t, cell.size * t)
+          .stroke({ color: OWNERSHIP_COLOR, width: ownershipStroke });
       }
     }
 

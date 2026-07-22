@@ -9,15 +9,17 @@ import {
   industryStarved,
   industryOutputPressure,
   districtTrafficMultiplier,
+  parcelValuation,
 } from '../../src/store/selectors.ts';
 import { createGameState, type GameState } from '../../src/sim/state.ts';
 import { makeCity } from '../../src/sim/model/cities.ts';
 import { makeTrain } from '../../src/sim/model/trains.ts';
 import { makeIndustry } from '../../src/sim/model/industries.ts';
-import { makeDistrict, EPISODE_TARGET, AGE_SPAN_DAYS } from '../../src/sim/model/districts.ts';
+import { makeDistrict, EPISODE_TARGET, AGE_SPAN_DAYS, DISTRICT_FOOTPRINT_TILES } from '../../src/sim/model/districts.ts';
 import { OUTPUT_CAP } from '../../src/sim/systems/production.ts';
 import { demandSystem } from '../../src/sim/systems/demand.ts';
 import { tick } from '../../src/sim/tick.ts';
+import { addressAt, buyLand, charterRoute, expireCharters } from '../../src/sim/model/land.ts';
 
 describe('read-model selectors (U9)', () => {
   it('reports a city\'s live demand, most-wanted first', () => {
@@ -215,5 +217,112 @@ describe('freight demand isolation from district health (M4 U5, KTD9)', () => {
     expect(cityB.backlog.steel).toBe(cityA.backlog.steel);
     // ...while passenger/mail backlog, which does couple to it, differs.
     expect(cityB.backlog.passengers).not.toBe(cityA.backlog.passengers);
+  });
+});
+
+describe('parcelValuation (milestone 6 U5, KTD6, R8/R9)', () => {
+  // The same sea-free 10x10 block tests/sim/track.test.ts and
+  // tests/sim/landValue.test.ts already rely on.
+  const OX = 19;
+  const OY = 0;
+
+  function baseState(): GameState {
+    const s = createGameState(1);
+    s.world = { width: OX + 20, height: OY + 20 };
+    s.moneyCents = 1_000_000_00;
+    return s;
+  }
+
+  it('returns null for an unknown parcel id', () => {
+    const s = baseState();
+    expect(parcelValuation(s, 'ghost')).toBeNull();
+  });
+
+  it('AE4: a parcel whose catchment gains development shows district-development as a positive attributed cause', () => {
+    const s = baseState();
+    s.stations.push({ id: 'stn', x: OX, y: OY, radius: 3 });
+    const district = makeDistrict('dst', { id: 'stn', x: OX, y: OY });
+    s.districts.push(district);
+    const address = addressAt(OX, OY);
+    buyLand(s, address);
+    const parcelId = s.parcels[0].id;
+
+    district.development = 1; // the district grows after purchase
+
+    const valuation = parcelValuation(s, parcelId)!;
+    expect(valuation.deltaCents).toBeGreaterThan(0);
+    const top = valuation.attribution[0];
+    expect(top.cents).toBeGreaterThan(0);
+    expect(['station-uplift', 'district-development']).toContain(top.name);
+  });
+
+  it('AE5: a parcel crossed by a new cut after purchase shows severance as a negative attributed cause', () => {
+    const s = baseState();
+    s.stations.push({ id: 'stn', x: OX, y: OY, radius: 3 });
+    const district = makeDistrict('dst', { id: 'stn', x: OX, y: OY });
+    s.districts.push(district);
+    const address = addressAt(OX, OY);
+    buyLand(s, address);
+    const parcelId = s.parcels[0].id;
+
+    // A cut lands squarely on the parcel's own tile after purchase.
+    district.cuts.push({ ax: OX, ay: OY, bx: OX, by: OY, strength: 2 });
+
+    const valuation = parcelValuation(s, parcelId)!;
+    const severance = valuation.attribution.find((i) => i.name === 'severance');
+    expect(severance).toBeDefined();
+    expect(severance!.cents).toBeLessThan(0);
+  });
+
+  it('a parcel whose charter lapses attributes the loss to the vanished anticipation item, not an unnamed residual', () => {
+    const s = baseState();
+    charterRoute(s, [{ x: OX, y: OY }, { x: OX + 6, y: OY }]);
+    const address = addressAt(OX + 5, OY); // near the terminal — real premium paid
+    buyLand(s, address);
+    const parcelId = s.parcels[0].id;
+
+    s.timeDays = s.charters[0].expiresDay;
+    expireCharters(s);
+
+    const valuation = parcelValuation(s, parcelId)!;
+    expect(valuation.deltaCents).toBeLessThan(0);
+    const anticipationLoss = valuation.attribution.find((i) => i.name === 'anticipation');
+    expect(anticipationLoss).toBeDefined();
+    expect(anticipationLoss!.cents).toBeLessThan(0);
+  });
+
+  it('attribution items sum to exactly the total delta (completeness)', () => {
+    const s = baseState();
+    s.stations.push({ id: 'stn', x: OX, y: OY, radius: 3 });
+    const district = makeDistrict('dst', { id: 'stn', x: OX, y: OY });
+    s.districts.push(district);
+    const address = addressAt(OX, OY);
+    buyLand(s, address);
+    const parcelId = s.parcels[0].id;
+
+    district.development = 0.7;
+    district.cuts.push({ ax: OX, ay: OY, bx: OX + 1, by: OY, strength: 1 });
+
+    const valuation = parcelValuation(s, parcelId)!;
+    const attributedSum = valuation.attribution.reduce((sum, i) => sum + i.cents, 0);
+    expect(attributedSum).toBe(valuation.deltaCents);
+  });
+
+  it('attribution is sorted by magnitude, largest cause first', () => {
+    const s = baseState();
+    s.stations.push({ id: 'stn', x: OX, y: OY, radius: DISTRICT_FOOTPRINT_TILES });
+    const district = makeDistrict('dst', { id: 'stn', x: OX, y: OY });
+    s.districts.push(district);
+    const address = addressAt(OX, OY);
+    buyLand(s, address);
+    const parcelId = s.parcels[0].id;
+
+    district.development = 1;
+    district.cuts.push({ ax: OX, ay: OY, bx: OX, by: OY, strength: 0.5 });
+
+    const valuation = parcelValuation(s, parcelId)!;
+    for (let i = 1; i < valuation.attribution.length; i++) {
+      expect(Math.abs(valuation.attribution[i - 1].cents)).toBeGreaterThanOrEqual(Math.abs(valuation.attribution[i].cents));
+    }
   });
 });

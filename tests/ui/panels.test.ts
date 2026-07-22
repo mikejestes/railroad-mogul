@@ -4,8 +4,10 @@ import { applyIntent, buyTrain } from '../../src/store/applyIntents.ts';
 import { createGameState, STARTING_CAPITAL, type GameState } from '../../src/sim/state.ts';
 import { engineById } from '../../src/sim/model/trains.ts';
 import { refusalMessage, summarizeSteps, structureBreakdown } from '../../src/ui/panels/SurveyPanel.tsx';
+import { attributionLabel, formatSignedCents } from '../../src/ui/panels/LandPanel.tsx';
 import type { SurveyRefusalReason } from '../../src/sim/surveying.ts';
 import type { StepCost } from '../../src/sim/model/trackCost.ts';
+import type { ParcelValueItemName } from '../../src/sim/model/land.ts';
 
 /**
  * U10 wiring: the store bridge publishes snapshots to subscribers, and queued
@@ -179,5 +181,29 @@ describe('SurveyPanel content logic (milestone 3 U6, AE3/AE4, KTD7)', () => {
 
   it('structureBreakdown is empty when no step carries a structure', () => {
     expect(structureBreakdown([makeStep(), makeStep()])).toEqual({});
+  });
+});
+
+describe('LandPanel pure content logic (milestone 6 U6, R8/R9, AE4, KTD7)', () => {
+  const ALL_NAMES: ParcelValueItemName[] = [
+    'terrain-base',
+    'station-uplift',
+    'district-development',
+    'severance',
+    'derelict',
+    'floor-adjustment',
+    'anticipation',
+  ];
+
+  it('every parcel-value item name maps to a distinct, non-empty label', () => {
+    const labels = ALL_NAMES.map(attributionLabel);
+    expect(labels.every((l) => l.length > 0)).toBe(true);
+    expect(new Set(labels).size).toBe(ALL_NAMES.length);
+  });
+
+  it('formatSignedCents shows a leading sign for positive and negative values, none for zero', () => {
+    expect(formatSignedCents(310_00)).toBe('+$310');
+    expect(formatSignedCents(-120_00)).toBe('-$120');
+    expect(formatSignedCents(0)).toBe('$0');
   });
 });
