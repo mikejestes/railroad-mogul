@@ -8,6 +8,7 @@ import type { ZoomTierId } from './zoomTiers.ts';
 import { TerrainChunkManager } from './terrainChunks.ts';
 import type { Tile } from '../sim/pathfinding.ts';
 import type { StepCost, TrackStructure } from '../sim/model/trackCost.ts';
+import { DistrictRenderer } from './districtRenderer.ts';
 
 /**
  * Draws the whole world onto the map canvas (U3/U5/U6/U9). Terrain is drawn
@@ -73,6 +74,15 @@ import type { StepCost, TrackStructure } from '../sim/model/trackCost.ts';
  * takes the PixiJS `Renderer` at construction (previously only `tilePx`)
  * purely to hand it to the chunk manager, which needs a real renderer to
  * draw chunk `Graphics` into a `RenderTexture`.
+ *
+ * M4 U7 (KTD7, R8/R10/R11): a `DistrictRenderer` layer sits above terrain
+ * and below track/stations, reconciled every frame the same way the chunk
+ * manager is. It only ever draws at `street` tier — `local` and below stay
+ * pixel-identical to their pre-M4 marker rendering (a regression guard
+ * proven by `tests/render/worldRenderer.test.ts`'s unchanged predicates).
+ * Station and train markers additionally treat `street` like `local` (the
+ * detailed ring/directional marks), since the plan calls for markers to
+ * remain visible over a district scene, not to be replaced by it.
  *
  * U6 (R7): industries — the 26 sites simulated by `productionSystem` but
  * previously never drawn — get their own layer between track and stations.
@@ -303,6 +313,7 @@ function drawDashedSegment(
 export class WorldRenderer {
   readonly container = new Container();
   private chunkManager: TerrainChunkManager;
+  private districtRenderer: DistrictRenderer;
   private riverLayer = new Graphics();
   private trackLayer = new Graphics();
   private industryLayer = new Graphics();
@@ -318,10 +329,13 @@ export class WorldRenderer {
 
   constructor(renderer: Renderer, private tilePx: number) {
     this.chunkManager = new TerrainChunkManager(renderer, tilePx);
-    // Back to front: terrain -> rivers -> track -> industries -> stations ->
-    // cities -> trains -> survey overlay (drawn above everything else, U6).
+    this.districtRenderer = new DistrictRenderer(renderer, tilePx);
+    // Back to front: terrain -> districts (street tier) -> rivers -> track ->
+    // industries -> stations -> cities -> trains -> survey overlay (drawn
+    // above everything else, U6).
     this.container.addChild(
       this.chunkManager.container,
+      this.districtRenderer.container,
       this.riverLayer,
       this.trackLayer,
       this.industryLayer,
@@ -332,14 +346,16 @@ export class WorldRenderer {
     );
   }
 
-  /** Destroy every resident chunk texture (KTD7) so terrain VRAM doesn't
+  /** Destroy every resident chunk/district texture (KTD7) so VRAM doesn't
    * outlive the renderer that owns it. */
   destroy(): void {
     this.chunkManager.destroy();
+    this.districtRenderer.destroy();
   }
 
   render(state: GameState, camera: Camera, overlay?: SurveyOverlay): void {
     this.chunkManager.update(camera, state.world.width, state.world.height);
+    this.districtRenderer.update(state, camera);
     const t = this.tilePx;
 
     const { scale, tier } = camera;
@@ -422,7 +438,7 @@ export class WorldRenderer {
       if (!isWithinVisibleBounds({ x: s.x, y: s.y }, visible, VISIBLE_MARGIN_TILES)) continue;
       const cx = s.x * t + t / 2;
       const cy = s.y * t + t / 2;
-      if (tier === 'local') {
+      if (tier === 'local' || tier === 'street') {
         this.stationLayer.circle(cx, cy, stationMarkerSize / 2).fill({ color: COLORS.station });
         this.stationLayer
           .rect(
@@ -473,7 +489,7 @@ export class WorldRenderer {
       if (!isWithinVisibleBounds({ x: train.x, y: train.y }, visible, VISIBLE_MARGIN_TILES)) continue;
       const cx = train.x * t + t / 2;
       const cy = train.y * t + t / 2;
-      if (tier === 'local') {
+      if (tier === 'local' || tier === 'street') {
         this.trainLayer
           .poly([
             cx - trainMarkerSize / 2,

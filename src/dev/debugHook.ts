@@ -7,6 +7,8 @@ import type { ZoomTierId } from '../render/zoomTiers.ts';
 import { terrainAt, elevationAt, type Terrain } from '../world/geography.ts';
 import { surveyRoute as runSurveyRoute, type SurveyResult } from '../sim/surveying.ts';
 import type { Tile } from '../sim/pathfinding.ts';
+import type { District } from '../sim/model/districts.ts';
+import { generateDistrictScene, type DistrictScene } from '../world/streets.ts';
 
 /**
  * Dev-only inspection & control hook (installed behind import.meta.env.DEV).
@@ -37,7 +39,7 @@ import type { Tile } from '../sim/pathfinding.ts';
  * determinism gate (R10): sampling it any number of times, in any order, from
  * automation never mutates `state` or the save.
  *
- * Route-surveying milestone U7 closes the milestone with the same pattern:
+ * Route-surveying milestone U7 closes that milestone with the same pattern:
  * `surveyRoute` re-exports `sim/surveying.ts`'s pure function verbatim
  * (read-only — never mutates `state` or dispatches anything, so a browser
  * driver can assert a proposal's price/grade/refusal by value before ever
@@ -45,6 +47,19 @@ import type { Tile } from '../sim/pathfinding.ts';
  * precedent of routing through `applyNow` — the exact `commitRoute` intent
  * `SurveyPanel`'s Commit button dispatches (U6), just applied synchronously
  * so automation doesn't depend on the rAF loop draining it.
+ *
+ * City-districts milestone U8 (R9/R11/R13) extends this once more:
+ * `districts` exposes the live district records (through the existing
+ * version channel — R13, no second store), and `districtScene` samples
+ * `world/streets.ts`'s pure generator for a given district id, using the
+ * live world seed (`state.rng.seed`, plain data — never the RNG counter).
+ * This is what lets a browser driver verify AE1 by comparing scene
+ * *statistics* (height-class distribution, use counts) between two
+ * differently-fed districts, per the assert-on-state-not-pixels rule, rather
+ * than by diffing screenshots. Like `terrainAt`/`elevationAt`, sampling a
+ * scene any number of times never mutates `state` or the save (R9's
+ * scene-purity gate) — `districtScene` calls straight into the pure
+ * generator with no caching of its own.
  */
 export interface DebugApi {
   /** Live game state (always current). */
@@ -90,6 +105,13 @@ export interface DebugApi {
   /** Raw elevation at a tile coordinate, on the same reference field and
    *  coordinate transform `terrainAt` classifies from (terrain-substrate U7). */
   elevationAt(x: number, y: number): number;
+  /** Live district records (always current, city-districts U8). */
+  readonly districts: readonly District[];
+  /** Sample the pure street-scene generator for a district, by id, using the
+   *  live world seed. Throws if no district with that id exists. Never
+   *  mutates state — safe to call any number of times (R9's scene-purity
+   *  gate; see the module docblock). */
+  districtScene(districtId: string): DistrictScene;
   /** Snapshot of headline numbers for quick assertions. */
   summary(): {
     tick: number;
@@ -149,6 +171,15 @@ export function installDebugHook(store: GameStore, clock: GameClock, seed: numbe
     },
     terrainAt: (x, y) => terrainAt(x, y),
     elevationAt: (x, y) => elevationAt(x, y),
+    get districts() {
+      return store.getState().districts;
+    },
+    districtScene: (districtId) => {
+      const s = store.getState();
+      const district = s.districts.find((d) => d.id === districtId);
+      if (!district) throw new Error(`districtScene: no district with id ${districtId}`);
+      return generateDistrictScene(s.rng.seed, district, { x: district.anchorX, y: district.anchorY });
+    },
     setCamera: ({ x, y, scale }) => {
       // Reuse the same methods real wheel/pointer input drives (zoomAt,
       // panBy, worldToScreen) rather than a bypass that pokes camera

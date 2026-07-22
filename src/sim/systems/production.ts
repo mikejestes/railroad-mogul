@@ -1,5 +1,6 @@
 import type { System } from '../tick.ts';
 import { RECIPES, type GoodId } from '../model/goods.ts';
+import { districtTrafficMultiplier } from '../model/districts.ts';
 
 /**
  * Production system (U4, first in the KTD3 pipeline). Each tick, raw extractors
@@ -10,21 +11,31 @@ import { RECIPES, type GoodId } from '../model/goods.ts';
  * Cities also generate passengers and mail here (from population): outbound
  * travelers/mail waiting at the city's station to be hauled elsewhere. This is
  * revenue traffic, not a growth input — freight still gates city growth (R7).
+ *
+ * M4 U5 (KTD5, R7): passenger/mail generation is scaled by
+ * `districtTrafficMultiplier` — a healthy district covering the city
+ * generates more outbound traffic, the "good urbanism pays" loop. Freight
+ * output (industry `outputStock`, below) is untouched (KTD9 isolation): only
+ * passengers and mail couple to district health.
  */
 export const OUTPUT_CAP = 40;
 export const CITY_SUPPLY_CAP = 40;
 
 /** Goods a city generates from population (as opposed to industry output). */
-const CITY_SUPPLIED_GOODS: GoodId[] = ['passengers', 'mail'];
+export const CITY_SUPPLIED_GOODS: GoodId[] = ['passengers', 'mail'];
 
 export const productionSystem: System = (state, dtDays) => {
   // Cities generate passengers/mail at the same rate they demand them — a big
-  // city both sends and receives a lot of traffic.
+  // city both sends and receives a lot of traffic. Scaled by district health
+  // in range (KTD5): a city with no districted station in range multiplies
+  // by exactly 1, so pre-milestone traffic numbers are a regression case of
+  // this same code path, not a special one.
   for (const city of state.cities) {
+    const multiplier = districtTrafficMultiplier(state, city);
     for (const good of CITY_SUPPLIED_GOODS) {
       const rate = city.demand[good] ?? 0;
       if (rate <= 0) continue;
-      city.supply[good] = Math.min(CITY_SUPPLY_CAP, (city.supply[good] ?? 0) + rate * dtDays);
+      city.supply[good] = Math.min(CITY_SUPPLY_CAP, (city.supply[good] ?? 0) + rate * multiplier * dtDays);
     }
   }
 

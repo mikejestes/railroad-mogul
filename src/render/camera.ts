@@ -52,9 +52,15 @@ export const CLICK_DRAG_THRESHOLD_PX = 4;
  * `MIN_SCALE` stops the player shrinking the world to an unreadable speck;
  * `MAX_SCALE` stops zooming in past the point where a single tile fills the
  * screen and there's nothing left to see.
+ *
+ * M4 U7 (KTD7): raised 480 -> 3600 to give the new `street` tier
+ * (`zoomTiers.ts`) real depth to resolve district scenes in, rather than a
+ * sliver just past `local`'s old ceiling — sized to roughly the same
+ * zoom-depth ratio `local` had under the old `MAX_SCALE` (~3.4x its own
+ * up-threshold), applied to `STREET_UP_THRESHOLD` instead.
  */
 export const MIN_SCALE = 4;
-export const MAX_SCALE = 480;
+export const MAX_SCALE = 3600;
 
 /** Approximate CSS pixel height of one "line" of `WheelEvent.deltaY` under
  * `DOM_DELTA_LINE`, used to normalize line-mode wheel deltas (typical of
